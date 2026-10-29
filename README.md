@@ -1,4 +1,6 @@
-# `extdisk-apfs`
+# extdisk-apfs
+
+[![check](https://github.com/xsyetopz/extdisk-apfs/actions/workflows/check.yml/badge.svg)](https://github.com/xsyetopz/extdisk-apfs/actions/workflows/check.yml)
 
 Reclaim an external USB or Thunderbolt disk as one APFS volume on a GUID
 partition map, using macOS `diskutil`. Written for the case of an SSD or HDD
@@ -7,7 +9,7 @@ layout, or an old backup.
 
 The erase itself is one documented command:
 
-```
+```bash
 diskutil eraseDisk APFS <label> GPT /dev/diskN
 ```
 
@@ -24,7 +26,7 @@ renumbered on every attach, so `disk4` today can be a different disk tomorrow.
 
 ## Install
 
-```
+```bash
 git clone https://github.com/xsyetopz/extdisk-apfs.git
 cd extdisk-apfs
 ./bin/extdisk-apfs list
@@ -35,7 +37,7 @@ To run it from anywhere, put `bin` on your `PATH`, or symlink
 
 ## Use
 
-```
+```bash
 extdisk-apfs list                 # external physical disks, as candidates
 extdisk-apfs show disk4           # its partition map and mounted volumes
 extdisk-apfs erase disk4 --label Scratch --dry-run
@@ -63,18 +65,41 @@ identifier, and then re-runs every check before writing anything.
 ### Options for `erase`
 
 | Option | Effect |
-|---|---|
+| --- | --- |
 | `--label <name>` | Volume name. Required, because `diskutil eraseDisk` takes one as a positional argument. |
 | `--case-sensitive` | Use the `Case-sensitive APFS` personality. The default `APFS` personality is case-insensitive. |
+| `--own` | `chown` the new volume's root directory to you, so that you can write to it. |
 | `--enable-owners` | Run `diskutil enableOwnership`, so file owners on the volume are honoured. |
 | `--no-spotlight` | `mdutil -i off` for the new volume. |
 | `--no-timemachine` | `tmutil addexclusion -v` for the new volume. |
 | `--dry-run` | Print every command, run none of them. |
 | `--force` | Skip the typed confirmation. For scripts. |
 
-`--enable-owners`, `--no-spotlight` and `--no-timemachine` each run a `sudo`
-command, so they ask for an administrator password. `--no-timemachine` also
-needs Full Disk Access for your terminal, per `man tmutil`.
+Those four settings each run a `sudo` command, so they ask for an administrator
+password. `--no-timemachine` also needs Full Disk Access for your terminal, per
+`man tmutil`.
+
+### A New Volume Is Not Yours
+
+`diskutil eraseDisk` leaves the volume's root directory owned by `root`. On the
+disk this was developed against it was `root:wheel drwxrwxr-x`, and the console
+user is in `staff`, so `touch /Volumes/DevAudioStore/probe` failed with
+`Permission denied` right after a successful format. `--own` runs
+`sudo chown "$(id -u):$(id -g)"` on the new volume's root directory, which is
+the fix. After an erase without it:
+
+```bash
+sudo chown "$(id -u):$(id -g)" /Volumes/X
+```
+
+`erase` ends by printing the owner, the mode, your user and group, and whether
+you can write, so this does not surface later as a permission error from an
+unrelated tool.
+
+`--enable-owners` is a different thing. Per `man diskutil`, `enableOwnership`
+makes the on-disk user and group IDs count, by editing the Volume Database on
+the host; it does not give you access to a root-owned directory. Use it when
+you will restore a tree whose owners must survive.
 
 ## Which Targets Are Refused
 
@@ -159,27 +184,76 @@ this re-check.
 
 ## Development
 
+```bash
+scripts/check              # everything below, in order
+scripts/check lint         # shellcheck
+scripts/check syntax       # bash 3.2 parse check
+scripts/check exec         # file modes
+scripts/check actions      # actionlint over .github/workflows
+scripts/check tests        # tests/run
 ```
-shellcheck --shell=bash --external-sources bin/extdisk-apfs lib/*.sh
+
+`scripts/check` is what CI runs, so a green run locally is a green run there.
+The checks are:
+
+- **`shellcheck`** over all nine shell files, including `tests/run` and
+  `scripts/check` themselves. The settings live in `.shellcheckrc`, so an
+  editor plugin reports the same findings: `shell=bash` because the library
+  files have no shebang and would otherwise be read as POSIX `sh`,
+  `external-sources` and `source-path=SCRIPTDIR` so the `.` lines are followed,
+  and four optional checks. `check-extra-masked-returns` is deliberately off:
+  it fired 98 times, every one on `dk_get`, which reports an unknown value as
+  empty output and exits zero by design.
+- **`bash -n`** with `/bin/bash` specifically, which is bash 3.2.57. The tool
+  has to run under the bash that macOS ships, not under a newer one from
+  Homebrew.
+- **File modes.** `bin/extdisk-apfs`, `tests/run` and `scripts/check`
+  executable; every `lib/*.sh` not executable, because they are sourced and
+  have no shebang.
+- **`actionlint`**, which also runs `shellcheck` over each `run:` block in the
+  workflow.
+- **`tests/run`**, every check that needs no external disk. It reports the
+  counts it ran, and one check is skipped unless you opt in below.
+
+Install the two linters with `brew install shellcheck actionlint`.
+
+Each test asserts on an exit status or a returned value, never on the wording
+of a message. The hardware facts are read from whichever disk holds the running
+system rather than from a hardcoded `disk0`, so the suite also passes on a VM
+or a CI runner. The destructive path is covered by the refusals and by a dry
+run; to include the accepting side of `guard_target`, name a real external disk:
+
+```bash
+EXTDISK_TEST_DISK=disk4 tests/run
+```
+
+That adds three checks and still writes nothing: it dry-runs an erase of that
+disk and asserts that `guard_unchanged` accepts a matching fingerprint and
+refuses a changed one.
+
+A dry run is also how to test a change by hand:
+
+```bash
 ./bin/extdisk-apfs erase diskN --label Test --dry-run
 ```
 
-`--dry-run` exercises the full path, including every guard and the
-post-confirmation re-check, without writing anything, so it is the way to test
-a change against a real disk. In a dry run the post-format commands print a
-placeholder instead of a mount point, because the volume does not exist yet and
-naming a path that belongs to another volume would be misleading.
+It exercises the full path, including every guard and the post-confirmation
+re-check, without writing anything. In a dry run the post-format commands print
+a placeholder instead of a mount point, because the volume does not exist yet
+and naming a path that belongs to another volume would be misleading.
 
 The code is split by concern:
 
 | File | Concern |
-|---|---|
+| --- | --- |
 | `lib/diskinfo.sh` | Facts, read from `diskutil`'s plists |
 | `lib/guard.sh` | The refusals, and nothing else |
 | `lib/inspect.sh` | Listing candidates and showing a layout |
 | `lib/erase.sh` | The destructive step and the post-format settings |
 | `lib/verify.sh` | The report after a format |
 | `lib/ui.sh` | Output, shell quoting, the confirmation prompt |
+| `tests/run` | The checks that need no external disk |
+| `scripts/check` | Every check, for a shell and for CI |
 
 ## License
 

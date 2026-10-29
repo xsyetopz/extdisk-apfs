@@ -1,0 +1,208 @@
+#!/bin/bash
+# tests/run - the checks that need no external disk, so CI can run them.
+#
+# Each test asserts on an exit status or on a returned value. None asserts on
+# the wording of a message, because the wording is free to change.
+#
+# The destructive path cannot be tested here: an erase has no safe target on a
+# CI runner. Set EXTDISK_TEST_DISK to an external disk identifier to also run
+# the dry run against real hardware.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/extdisk-apfs"
+PASS=0
+FAIL=0
+SKIP=0
+
+# shellcheck source=../lib/ui.sh
+. "$ROOT/lib/ui.sh"
+# shellcheck source=../lib/diskinfo.sh
+. "$ROOT/lib/diskinfo.sh"
+# shellcheck source=../lib/guard.sh
+. "$ROOT/lib/guard.sh"
+# shellcheck source=../lib/erase.sh
+. "$ROOT/lib/erase.sh"
+
+pass() {
+  PASS=$((PASS + 1))
+  printf '  ok    %s\n' "$1"
+}
+
+fail() {
+  FAIL=$((FAIL + 1))
+  printf '  FAIL  %s\n' "$1" >&2
+  [ -z "${2:-}" ] || printf '        %s\n' "$2" >&2
+}
+
+skip() {
+  SKIP=$((SKIP + 1))
+  printf '  skip  %s (%s)\n' "$1" "$2"
+}
+
+# exits_zero <description> <command...>
+exits_zero() {
+  local desc="$1" out
+  shift
+  if out="$("$@" 2>&1)"; then
+    pass "$desc"
+  else
+    fail "$desc" "exit $?: $(printf '%s' "$out" | tail -n 1)"
+  fi
+}
+
+# exits_nonzero <description> <command...>
+exits_nonzero() {
+  local desc="$1" out
+  shift
+  if out="$("$@" 2>&1)"; then
+    fail "$desc" 'exit 0, so it was accepted'
+  else
+    pass "$desc"
+  fi
+}
+
+# equals <description> <expected> <actual>
+equals() {
+  if [ "$2" = "$3" ]; then
+    pass "$1"
+  else
+    fail "$1" "wanted '$2', got '$3'"
+  fi
+}
+
+# The disk to read facts from and to be refused. Derived rather than written as
+# disk0, because a virtual machine, a CI runner and a Mac with a Fusion Drive
+# all number their disks differently, and the boot disk is the one disk every
+# machine has.
+BOOT_DISK="$(dk_boot_disks | head -n 1)"
+BOOT_PART="$(dk_list_get AllDisks "$BOOT_DISK" | grep -v "^$BOOT_DISK\$" | head -n 1)"
+
+printf '\ncommands answer\n'
+exits_zero 'help' "$BIN" help
+exits_zero 'no argument' "$BIN"
+exits_zero 'list' "$BIN" list
+exits_zero 'version' "$BIN" --version
+equals 'version matches the source' \
+  "extdisk-apfs $(sed -n "s/^VERSION='\(.*\)'$/\1/p" "$BIN")" \
+  "$("$BIN" --version)"
+exits_nonzero 'an unknown command' "$BIN" frobnicate
+exits_nonzero 'show without an identifier' "$BIN" show
+exits_nonzero 'verify without an identifier' "$BIN" verify
+
+printf '\nerase refuses a bad invocation\n'
+exits_nonzero 'no identifier' "$BIN" erase
+exits_nonzero '--label without a value' "$BIN" erase "$BOOT_DISK" --label
+exits_nonzero 'an unknown option' "$BIN" erase "$BOOT_DISK" --nope
+exits_nonzero 'no label' "$BIN" erase "$BOOT_DISK" --dry-run
+
+printf '\nerase refuses a bad target\n'
+for target in "$BOOT_DISK" "$BOOT_PART" "/dev/$BOOT_DISK" "$BOOT_DISK/../disk9" \
+  "$BOOT_DISK;id" 'disk*' nonsense disk99 ''; do
+  exits_nonzero "target '$target'" "$BIN" erase "$target" --label T --dry-run
+done
+
+printf '\nguard_label\n'
+for bad in '' '.' '..' 'a/b' 'a:b' '-x' ' lead' 'trail ' "$(printf 'a\tb')"; do
+  if (guard_label "$bad") >/dev/null 2>&1; then
+    fail "label '$bad' is refused" 'guard_label accepted it'
+  else
+    pass "label '$bad' is refused"
+  fi
+done
+for good in Scratch 'Good Name' DevAudioStore a 'a-b' 'a.b'; do
+  if (guard_label "$good") >/dev/null 2>&1; then
+    pass "label '$good' is accepted"
+  else
+    fail "label '$good' is accepted" 'guard_label refused it'
+  fi
+done
+
+printf '\nshell_quote round-trips\n'
+equals 'a plain word' 'abc' "$(eval "$(shell_quote printf '%s' abc)")"
+equals 'a space' 'Macintosh HD' "$(eval "$(shell_quote printf '%s' 'Macintosh HD')")"
+equals 'an apostrophe' "it's" "$(eval "$(shell_quote printf '%s' "it's")")"
+# The literal $HOME is the point of this test: shell_quote has to stop the
+# shell from expanding it, so it must not expand here either.
+# shellcheck disable=SC2016
+equals 'a dollar sign' '$HOME' "$(eval "$(shell_quote printf '%s' '$HOME')")"
+equals 'a semicolon' 'a;id' "$(eval "$(shell_quote printf '%s' 'a;id')")"
+equals 'two words stay two' 'a|b' "$(eval "$(shell_quote printf '%s|%s' a b)")"
+
+printf '\nhuman_size\n'
+equals 'bytes' '512 B' "$(human_size 512)"
+equals 'zero' '0 B' "$(human_size 0)"
+equals 'no argument' '0 B' "$(human_size)"
+equals 'megabytes' '209.7 MB' "$(human_size 209715200)"
+equals 'gigabytes' '255.9 GB' "$(human_size 255851024384)"
+equals 'terabytes' '2.0 TB' "$(human_size 2000000000000)"
+
+printf '\ndisk facts, read from %s\n' "$BOOT_DISK"
+if [ -n "$BOOT_DISK" ]; then
+  pass 'the boot volume resolves to a whole disk'
+else
+  fail 'the boot volume resolves to a whole disk' 'dk_boot_disks was empty'
+fi
+equals 'the root mount point is on the boot disk' "$(dk_boot_disks)" \
+  "$(dk_whole_disks_of /)"
+equals 'the boot disk is a whole disk' 'true' "$(dk_get "$BOOT_DISK" WholeDisk)"
+if [ -n "$BOOT_PART" ]; then
+  equals 'a partition resolves to its whole disk' "$BOOT_DISK" \
+    "$(dk_whole_disk_of "$BOOT_PART")"
+  equals 'a partition is not a whole disk' 'false' "$(dk_get "$BOOT_PART" WholeDisk)"
+else
+  skip 'a partition resolves to its whole disk' "$BOOT_DISK has no partitions"
+fi
+if dk_exists "$BOOT_DISK"; then
+  pass "dk_exists finds $BOOT_DISK"
+else
+  fail "dk_exists finds $BOOT_DISK" 'returned false'
+fi
+if dk_exists disk99; then
+  fail 'dk_exists rejects disk99' 'returned true'
+else
+  pass 'dk_exists rejects disk99'
+fi
+equals 'dk_get is empty for an absent key' '' "$(dk_get "$BOOT_DISK" NoSuchKey)"
+if [ -n "$(dk_identity "$BOOT_DISK")" ]; then
+  pass 'dk_identity fingerprints a disk'
+else
+  fail 'dk_identity fingerprints a disk' 'empty fingerprint'
+fi
+equals 'dk_identity is stable across calls' \
+  "$(dk_identity "$BOOT_DISK")" "$(dk_identity "$BOOT_DISK")"
+for d in $(dk_external_whole_disks); do
+  equals "$d is listed as external" 'false' "$(dk_get "$d" Internal)"
+done
+if in_group "$(id -gn)"; then
+  pass 'in_group finds your primary group'
+else
+  fail 'in_group finds your primary group' 'returned false'
+fi
+if in_group no-such-group-xyz; then
+  fail 'in_group rejects a missing group' 'returned true'
+else
+  pass 'in_group rejects a missing group'
+fi
+
+printf '\nguard_target against hardware\n'
+if [ -n "${EXTDISK_TEST_DISK:-}" ]; then
+  exits_zero "$EXTDISK_TEST_DISK passes the refusals" \
+    "$BIN" erase "$EXTDISK_TEST_DISK" --label TestLabel --dry-run
+  if (guard_unchanged "$EXTDISK_TEST_DISK" deadbeef) >/dev/null 2>&1; then
+    fail 'a changed fingerprint is refused' 'guard_unchanged accepted it'
+  else
+    pass 'a changed fingerprint is refused'
+  fi
+  if (guard_unchanged "$EXTDISK_TEST_DISK" "$(dk_identity "$EXTDISK_TEST_DISK")") >/dev/null 2>&1; then
+    pass 'an unchanged fingerprint is accepted'
+  else
+    fail 'an unchanged fingerprint is accepted' 'guard_unchanged refused it'
+  fi
+else
+  skip 'the accepting path' 'set EXTDISK_TEST_DISK to an external disk'
+fi
+
+printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" -eq 0 ]

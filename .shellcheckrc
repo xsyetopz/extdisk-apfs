@@ -1,0 +1,24 @@
+# ShellCheck settings for this repository, so that an editor, scripts/check and
+# CI all report the same thing.
+
+# The library files are sourced by bin/extdisk-apfs and carry no shebang, so
+# without this they would be read as POSIX sh and every bash construct in them
+# would be a false positive. A file with a shebang keeps its own shell.
+shell=bash
+
+# Follow the `. "$LIB/..."` lines into the library files, resolving the paths
+# relative to the directory of the file doing the sourcing.
+external-sources=true
+source-path=SCRIPTDIR
+
+# Optional checks, chosen because each one catches a defect this code could
+# plausibly have. The style-only optional checks stay off.
+#   check-set-e-suppressed      set -e not applying inside a called function
+#   check-unassigned-uppercase  a mistyped global such as DRY_RUN
+#   avoid-nullary-conditions    [ $var ] instead of [ -n "$var" ]
+#   deprecate-which             which instead of command -v
+#
+# check-extra-masked-returns (SC2312) stays off: it fired 98 times, every one
+# of them on dk_get, which reports an unknown value as empty output and exits
+# zero on purpose, so its return value carries nothing to mask.
+enable=check-set-e-suppressed,check-unassigned-uppercase,avoid-nullary-conditions,deprecate-which

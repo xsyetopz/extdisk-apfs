@@ -1,0 +1,137 @@
+#!/bin/bash
+# scripts/check - every check this repository has. CI runs this same script, so
+# a green run here is a green run there.
+#
+# usage: scripts/check [lint|syntax|exec|actions|tests]
+# With no argument it runs all five and reports each failure.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT" || exit 1
+
+# Every shell file in the repository. The library files carry no extension-free
+# shebang, so they are listed by name rather than found by shebang.
+SHELL_FILES=(bin/extdisk-apfs lib/ui.sh lib/diskinfo.sh lib/guard.sh
+  lib/inspect.sh lib/erase.sh lib/verify.sh tests/run scripts/check)
+
+FAILED=''
+
+step() { printf '\n==> %s\n' "$1"; }
+
+note_failure() { FAILED="${FAILED:+$FAILED, }$1"; }
+
+check_lint() {
+  step 'shellcheck'
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    printf 'shellcheck is not installed; install it with: brew install shellcheck\n' >&2
+    note_failure shellcheck
+    return 1
+  fi
+  shellcheck --version | sed -n 's/^version: /shellcheck /p'
+  # The settings, including --external-sources, come from .shellcheckrc so that
+  # an editor plugin reads the same ones.
+  if shellcheck "${SHELL_FILES[@]}"; then
+    printf 'clean: %s files\n' "${#SHELL_FILES[@]}"
+  else
+    note_failure shellcheck
+    return 1
+  fi
+}
+
+check_syntax() {
+  step 'bash -n'
+  # bash 3.2 is what macOS ships as /bin/bash, and the tool has to run under
+  # it, so the parse check uses that binary rather than whichever bash is first
+  # on PATH.
+  local bash32='/bin/bash' file rc=0
+  "$bash32" --version | head -n 1
+  for file in "${SHELL_FILES[@]}"; do
+    if ! "$bash32" -n "$file"; then
+      printf 'syntax error in %s\n' "$file" >&2
+      rc=1
+    fi
+  done
+  if [ "$rc" -eq 0 ]; then
+    printf 'parsed: %s files\n' "${#SHELL_FILES[@]}"
+  else
+    note_failure 'bash -n'
+  fi
+  return "$rc"
+}
+
+check_exec() {
+  step 'file modes'
+  local rc=0 file
+  for file in bin/extdisk-apfs tests/run scripts/check; do
+    if [ -x "$file" ]; then
+      printf '  executable     %s\n' "$file"
+    else
+      printf '  NOT executable %s; run: chmod +x %s\n' "$file" "$file" >&2
+      rc=1
+    fi
+  done
+  # A sourced library must not be executable: it has no shebang, so running it
+  # would hand it to the wrong shell.
+  for file in lib/*.sh; do
+    if [ -x "$file" ]; then
+      printf '  EXECUTABLE     %s; it is sourced, so run: chmod -x %s\n' "$file" "$file" >&2
+      rc=1
+    else
+      printf '  sourced only   %s\n' "$file"
+    fi
+  done
+  [ "$rc" -eq 0 ] || note_failure 'file modes'
+  return "$rc"
+}
+
+check_actions() {
+  step 'actionlint'
+  if ! command -v actionlint >/dev/null 2>&1; then
+    printf 'actionlint is not installed; install it with: brew install actionlint\n' >&2
+    note_failure actionlint
+    return 1
+  fi
+  actionlint -version | head -n 1
+  # actionlint also runs shellcheck over each `run:` block, so a workflow step
+  # is held to the same standard as a file in the repository.
+  if actionlint; then
+    printf 'clean: .github/workflows\n'
+  else
+    note_failure actionlint
+    return 1
+  fi
+}
+
+check_tests() {
+  step 'tests/run'
+  if ! /bin/bash tests/run; then
+    note_failure tests
+    return 1
+  fi
+}
+
+case "${1:-all}" in
+  lint) check_lint ;;
+  syntax) check_syntax ;;
+  exec) check_exec ;;
+  actions) check_actions ;;
+  tests) check_tests ;;
+  all)
+    check_lint
+    check_syntax
+    check_exec
+    check_actions
+    check_tests
+    printf '\n'
+    if [ -n "$FAILED" ]; then
+      printf 'FAILED: %s\n' "$FAILED" >&2
+      exit 1
+    fi
+    printf 'all checks passed\n'
+    ;;
+  *)
+    printf 'usage: scripts/check [lint|syntax|exec|actions|tests]\n' >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,33 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # macOS, because every fact the tool reads comes from `diskutil`, `plutil`,
+    # `md5` and `stat -f`, and the image ships the same bash 3.2.57 that the tool
+    # has to run under on a user's Mac.
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The macOS runner image ships neither tool; its software list names Bash
+      # 3.2.57 and no shellcheck.
+      - name: Install ShellCheck and actionlint
+        run: |
+          command -v shellcheck || brew install shellcheck
+          command -v actionlint || brew install actionlint
+
+      # Lint, bash 3.2 parse check, file modes, workflow lint and the test
+      # suite. The suite skips the one case that needs an external disk,
+      # because a runner has none and an erase has no safe target there.
+      - name: Run every check
+        run: ./scripts/check
