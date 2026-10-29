@@ -30,10 +30,25 @@ new_volume_mount_point() {
   return 1
 }
 
+# take_ownership <mount-point>
+# diskutil eraseDisk leaves the volume's root directory owned by root. On the
+# disk this was developed against it was root:wheel drwxrwxr-x, and the
+# console user is in staff rather than wheel, so the user who just created the
+# volume could not write to it. chown on the root directory is what makes the
+# volume usable; enable_owners below does not, and would not.
+take_ownership() {
+  local mp="$1"
+  heading "Taking ownership of $mp"
+  say "This needs an administrator password."
+  run_cmd sudo chown "$(id -u):$(id -g)" "$mp" ||
+    warn "could not change the owner of $mp; it may stay unwritable for $(id -un)"
+}
+
 # enable_owners <mount-point>
-# An external volume mounts with ownership ignored, so every file appears to
-# belong to the mounting user. Developer tooling that checks file ownership,
-# and anything restoring a tree with mixed owners, needs ownership honoured.
+# Makes the on-disk user and group IDs count, per man diskutil. This is about
+# whether ownership is honoured, not about who owns anything: on a volume whose
+# root is owned by root it does not grant you access, and --own is the option
+# for that. Use this when you will restore a tree whose owners must survive.
 enable_owners() {
   local mp="$1"
   heading "Enabling ownership on $mp"
@@ -57,11 +72,45 @@ exclude_from_time_machine() {
 }
 
 # disable_spotlight <mount-point>
-# Turns off indexing of the volume. Re-enable it with: sudo mdutil -i on <mp>
+# Turns off indexing of the whole volume. Re-enable it with:
+#   sudo mdutil -i on <mp>
+# For build artifacts a .noindex directory suffix is the lighter alternative,
+# needs no password, and is what Xcode does to its own caches. See the
+# Spotlight section of docs/external-storage.md.
 disable_spotlight() {
   local mp="$1"
   heading "Disabling Spotlight indexing on $mp"
   say "This needs an administrator password."
   run_cmd sudo mdutil -i off "$mp" ||
     warn "could not disable Spotlight indexing on $mp"
+}
+
+# in_group <group-name>
+# True when the invoking user belongs to the group.
+in_group() {
+  case " $(id -Gn) " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# report_writability <mount-point>
+# Says plainly whether the invoking user can write to the new volume, because
+# a freshly erased volume is root-owned and the failure otherwise shows up
+# later as a permission error from an unrelated tool.
+report_writability() {
+  local mp="$1"
+  heading "Write access to $mp"
+  local owner_group member
+  owner_group="$(stat -f '%Sg' "$mp")"
+  if in_group "$owner_group"; then member=yes; else member=no; fi
+  printf '  owner:    %s\n' "$(stat -f '%Su:%Sg' "$mp")"
+  printf '  mode:     %s\n' "$(stat -f '%Sp' "$mp")"
+  printf '  you:      %s:%s\n' "$(id -un)" "$(id -gn)"
+  printf '  in %s:    %s\n' "$owner_group" "$member"
+  if [ -w "$mp" ]; then
+    ok "  $(id -un) can write to $mp"
+  else
+    warn "$(id -un) cannot write to $mp; rerun with --own, or run: sudo chown $(id -u):$(id -g) $(shell_quote "$mp")"
+  fi
 }

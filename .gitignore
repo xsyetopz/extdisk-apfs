@@ -1,3 +1,6 @@
 .DS_Store
 .research/
 *.plist.tmp
+
+# Local state, cache, and scratch files of claudetto, not for the public repository.
+/.claude/claudetto/

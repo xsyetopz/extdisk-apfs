@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-VERSION='1.1.0'
+VERSION='1.2.0'
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="${EXTDISK_LIB:-$ROOT/lib}"
@@ -46,9 +46,14 @@ erase options:
   --label <name>        Volume name. Required, because diskutil requires one.
   --case-sensitive      Use the case-sensitive APFS personality. Default is
                         the plain APFS personality, which is case-insensitive.
-  --enable-owners       Run diskutil enableOwnership on the new volume, so
-                        that file owners on the volume are honoured. Needs an
+  --own                 chown the new volume's root directory to you. A
+                        freshly erased volume is root-owned, so without this
+                        you may not be able to write to it. Needs an
                         administrator password.
+  --enable-owners       Run diskutil enableOwnership on the new volume, so
+                        that the on-disk user and group IDs count. This is a
+                        different thing from --own and does not grant you
+                        access. Needs an administrator password.
   --no-spotlight        Turn off Spotlight indexing for the new volume. Needs
                         an administrator password.
   --no-timemachine      Add a Time Machine volume exclusion. Needs an
@@ -68,11 +73,19 @@ rather than a whole disk, or part of the boot disk's storage.
 EOF
 }
 
+# post_format_steps <mount-point> [step...]
+# Each step is one of the tokens below, passed as its own argument.
 post_format_steps() {
-  local mp="$1" owners="$2" spotlight="$3" timemachine="$4"
-  [ "$owners" = "0" ] || enable_owners "$mp"
-  [ "$spotlight" = "0" ] || disable_spotlight "$mp"
-  [ "$timemachine" = "0" ] || exclude_from_time_machine "$mp"
+  local mp="$1" step
+  shift
+  for step in "$@"; do
+    case "$step" in
+      own) take_ownership "$mp" ;;
+      owners) enable_owners "$mp" ;;
+      spotlight) disable_spotlight "$mp" ;;
+      timemachine) exclude_from_time_machine "$mp" ;;
+    esac
+  done
 }
 
 cmd_erase() {
@@ -81,8 +94,11 @@ cmd_erase() {
   [ -n "$disk" ] || die "erase needs a disk identifier; run 'extdisk-apfs list'"
 
   local label='' personality='APFS' force=0
-  local want_owners=0 want_no_spotlight=0 want_no_tm=0
   local identity mount_point boot_disks
+  # An array, so each step stays one argument. In bash 3.2 under set -u an
+  # empty array cannot be expanded bare, hence the ${steps[@]+...} guard at
+  # each use site.
+  local steps=()
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -93,9 +109,10 @@ cmd_erase() {
         ;;
       --label=*) label="${1#--label=}"; shift ;;
       --case-sensitive) personality='Case-sensitive APFS'; shift ;;
-      --enable-owners) want_owners=1; shift ;;
-      --no-spotlight) want_no_spotlight=1; shift ;;
-      --no-timemachine) want_no_tm=1; shift ;;
+      --own) steps[${#steps[@]}]=own; shift ;;
+      --enable-owners) steps[${#steps[@]}]=owners; shift ;;
+      --no-spotlight) steps[${#steps[@]}]=spotlight; shift ;;
+      --no-timemachine) steps[${#steps[@]}]=timemachine; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --force) force=1; shift ;;
       *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
@@ -137,23 +154,22 @@ cmd_erase() {
     # volume, such as /Volumes/Macintosh HD, which is a symlink to / on a
     # stock system. The token has no shell metacharacters, so it prints as
     # typed rather than escaped.
-    if [ "$want_owners$want_no_spotlight$want_no_tm" != "000" ]; then
+    if [ "${#steps[@]}" -gt 0 ]; then
       say ''
       dim 'MOUNT_POINT below stands for the new volume, read from diskutil after the erase'
     fi
-    post_format_steps MOUNT_POINT \
-      "$want_owners" "$want_no_spotlight" "$want_no_tm"
+    post_format_steps MOUNT_POINT ${steps[@]+"${steps[@]}"}
     say ''
     dim "dry run finished; rerun without --dry-run to erase $disk"
     return 0
   fi
 
   if mount_point="$(new_volume_mount_point "$disk")"; then
-    post_format_steps "$mount_point" \
-      "$want_owners" "$want_no_spotlight" "$want_no_tm"
+    post_format_steps "$mount_point" ${steps[@]+"${steps[@]}"}
+    report_writability "$mount_point"
   else
     mount_point='(not mounted)'
-    if [ "$want_owners$want_no_spotlight$want_no_tm" != "000" ]; then
+    if [ "${#steps[@]}" -gt 0 ]; then
       warn "the new volume is not mounted, so the post-format steps were skipped"
     fi
   fi
