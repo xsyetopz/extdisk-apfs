@@ -25,7 +25,9 @@ hosts_rows() {
 hosts_rows_us() { hosts_rows | tr '\t' '\037'; }
 
 # host_row <id>
-hosts_row() { awk -F'\t' -v want="$1" '$1 == want' "$(hosts_file)"; }
+# Comments are excluded, so an argument such as '#' cannot match a header or a
+# comment line and be treated as an entry.
+hosts_row() { awk -F'\t' -v want="$1" '$1 !~ /^#/ && $1 != "id" && $1 == want' "$(hosts_file)"; }
 
 # host_field <field-number> <row>
 host_field() { printf '%s\n' "$2" | cut -f "$1"; }

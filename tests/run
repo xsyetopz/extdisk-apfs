@@ -321,6 +321,33 @@ equals 'stripping leaves the unrelated line' 1 "$(grep -c '^export EDITOR=vi$' "
 equals 'the backup keeps the original' 1 \
   "$(cat "$ENVF".extdisk-backup.* 2>/dev/null | grep -c '^export EDITOR=vi$')"
 
+# A volume name is user input, and the block is sourced by every new shell.
+# env_pair is the function host_volume builds its lines with, and a real shell
+# sources the result, so an expansion or a command substitution shows up here.
+# shellcheck disable=SC2016  # not expanding is the point: this is a volume name
+HOSTILE='/Volumes/My Disk $HOME`id`/x'
+ENVF_H="$TMP/zshenv-hostile"
+: >"$ENVF_H"
+EXTDISK_ENV_FILE="$ENVF_H" env_block_write /Volumes/Hostile \
+  "$(env_pair C_VAR "$HOSTILE")" >/dev/null 2>&1
+equals 'a value with a dollar and a backtick is sourced literally' "$HOSTILE" \
+  "$(/bin/bash -c '. "$1"; printf "%s" "$C_VAR"' _ "$ENVF_H")"
+
+# A hand-edited file can lose an end marker. Skipping from the start marker to
+# a marker that is not there would delete every line after it.
+ENVF_U="$TMP/zshenv-unbalanced"
+{
+  printf 'export KEEP=1\n'
+  env_marker_start /Volumes/Probe
+  printf 'export INSIDE=2\n'
+} >"$ENVF_U"
+if (env_block_strip "$ENVF_U" /Volumes/Probe) >/dev/null 2>&1; then
+  fail 'an unbalanced marker pair is refused' 'env_block_strip returned zero'
+else
+  pass 'an unbalanced marker pair is refused'
+fi
+equals 'the unbalanced file keeps all three lines' 3 "$(grep -c '' "$ENVF_U")"
+
 printf '\nthe host commands\n'
 exits_zero 'hosts' "$BIN" hosts
 exits_zero 'hosts --all' "$BIN" hosts --all

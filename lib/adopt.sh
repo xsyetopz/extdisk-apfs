@@ -27,17 +27,29 @@ env_marker_end() { printf '# <<< extdisk-apfs %s <<<\n' "$1"; }
 # this step. The comparison is on the whole line, not a pattern, because a
 # volume name can contain a regular expression character.
 env_block_strip() {
-  local file="$1" volume="$2" start end tmp
+  local file="$1" volume="$2" start end tmp starts ends
   [ -f "$file" ] || return 0
   start="$(env_marker_start "$volume")"
   end="$(env_marker_end "$volume")"
+  starts="$(grep -cxF "$start" "$file" || true)"
+  ends="$(grep -cxF "$end" "$file" || true)"
+  [ "$starts" != "0" ] || return 0
+  # An unbalanced pair means someone edited the file by hand. Skipping from the
+  # start marker to a missing end marker would drop every line after it, so
+  # refuse and let the operator look.
+  [ "$starts" = "$ends" ] ||
+    die "$file has $starts start markers and $ends end markers for $volume; fix them by hand, because removing the block would delete the rest of the file"
   tmp="$file.extdisk-tmp.$$"
   awk -v s="$start" -v e="$end" '
     $0 == s { skip = 1; next }
     $0 == e { skip = 0; next }
     !skip
   ' "$file" >"$tmp" || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$file"
+  # Copied back rather than moved over: a .zshenv managed by a dotfiles
+  # repository is a symlink, and mv would replace the link with a regular file
+  # and reset its mode. cp writes through the link.
+  cp "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
 }
 
 # env_block_write <volume> <VAR=value...>
@@ -71,6 +83,12 @@ env_block_write() {
   dim '  a new shell picks these up; this one does not'
 }
 
+# env_pair <VAR> <path>
+# One line for the block. Quoted by printf %q rather than wrapped in double
+# quotes: a volume named with a $ or a backtick would otherwise be expanded, or
+# run a command substitution, every time a shell sources the startup file.
+env_pair() { printf '%s=%s\n' "$1" "$(shell_quote "$2")"; }
+
 # cli_argv <argv-template> <path>
 # Fills CLI_ARGV, because bash 3.2 cannot return an array. Splitting the
 # template on spaces and substituting into one token keeps the path a single
@@ -79,13 +97,19 @@ env_block_write() {
 cli_argv() {
   local template="$1" path="$2" token
   CLI_ARGV=()
+  # Globbing off for the split: an unquoted expansion would turn a template
+  # token containing * or ? into whatever files sit in the current directory.
+  set -f
   for token in $template; do
     CLI_ARGV[${#CLI_ARGV[@]}]="${token//%s/$path}"
   done
+  set +f
 }
 
 # cli_current <query-template>
-# What the tool reports as its current value, with no path substituted.
+# What the tool reports as its current value, with no path substituted. An
+# empty answer is returned as empty; the caller says so rather than treating it
+# as "does not point at this volume".
 cli_current() {
   cli_argv "$1" ''
   "${CLI_ARGV[@]}" 2>/dev/null | head -n 1 || true
@@ -142,7 +166,7 @@ host_volume() {
     [ "$subdir" = '-' ] || run_cmd mkdir -p "$target" || die "could not create $target"
     case "$kind" in
       env)
-        pairs="$pairs$setting=\"$target\"
+        pairs="$pairs$(env_pair "$setting" "$target")
 "
         applied=$((applied + 1))
         ;;
@@ -221,8 +245,15 @@ unhost_volume() {
     [ "$kind" = 'cli' ] || continue
     host_installed "$detect" || continue
     current="$(cli_current "$query")"
+    if [ -z "$current" ]; then
+      warn "$name: '$query' printed nothing, so its setting was left as it is"
+      left=$((left + 1))
+      continue
+    fi
+    # The expansion is quoted, so a volume named with a *, a ? or a [ is
+    # matched literally rather than as a pattern.
     case "$current" in
-      "$volume"/*)
+      "$volume" | "$volume"/*)
         cli_argv "$revert" ''
         if run_cmd "${CLI_ARGV[@]}"; then
           reverted=$((reverted + 1))
