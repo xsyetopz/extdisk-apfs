@@ -23,7 +23,7 @@ the installed tool.
 
 On the command line, as complete commands:
 
-```
+```bash
 xcodebuild -scheme MyApp -derivedDataPath /Volumes/X/DerivedData build
 xcodebuild -scheme MyApp -archivePath /Volumes/X/Archives/MyApp.xcarchive archive
 ```
@@ -43,7 +43,7 @@ what changes the behaviour of the Xcode application itself.
 
 ### Swift Packages Fetched by Xcode
 
-```
+```bash
 xcodebuild -clonedSourcePackagesDirPath /Volumes/X/SourcePackages
 ```
 
@@ -52,7 +52,7 @@ packages are fetch or expected to be found".
 
 ### Swift Package Manager on the Command Line
 
-```
+```bash
 swift build --scratch-path /Volumes/X/spm-build --cache-path /Volumes/X/spm-cache
 ```
 
@@ -62,7 +62,7 @@ passed on every invocation or set in a wrapper script.
 
 ### Simulator Device Set
 
-```
+```bash
 xcrun simctl --set /Volumes/X/CoreSimulator list
 ```
 
@@ -76,7 +76,7 @@ The default set stays at `~/Library/Developer/CoreSimulator`.
 
 ### Volume Ownership
 
-```
+```bash
 sudo diskutil enableOwnership /Volumes/X
 ```
 
@@ -93,7 +93,7 @@ mounted it. `extdisk-apfs verify` prints this as `owners: enabled` or
 
 ### Time Machine Exclusion
 
-```
+```bash
 sudo tmutil addexclusion -v /Volumes/X
 ```
 
@@ -106,7 +106,7 @@ reformat.
 
 ### Spotlight Indexing
 
-```
+```bash
 sudo mdutil -i off /Volumes/X
 ```
 
@@ -135,7 +135,7 @@ Removable Volumes permission under Privacy & Security > Files and Folders.
 
 ### Homebrew Download Cache
 
-```
+```bash
 export HOMEBREW_CACHE=/Volumes/X/homebrew-cache
 ```
 
@@ -144,7 +144,7 @@ default `~/Library/Caches/Homebrew` on macOS.
 
 ### Bun Package Cache
 
-```
+```bash
 bun install --cache-dir=/Volumes/X/bun-cache
 ```
 
@@ -169,7 +169,7 @@ without an error.
 secure storage area", and no subcommand takes a destination path. Reclaim space
 instead of moving it:
 
-```
+```bash
 xcrun simctl runtime delete --outdated --dry-run
 xcrun simctl runtime delete --notUsedSinceDays 90
 xcrun simctl runtime delete --unusable
