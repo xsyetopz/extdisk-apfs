@@ -300,6 +300,8 @@ The code is split by concern:
 
 | File | Concern |
 | --- | --- |
+| `bin/extdisk-apfs` | Loading the modules and dispatching one command |
+| `lib/cli.sh` | The usage text and each command's options |
 | `lib/diskinfo.sh` | Facts, read from `diskutil`'s plists |
 | `lib/guard.sh` | The refusals, and nothing else |
 | `lib/inspect.sh` | Listing candidates and showing a layout |

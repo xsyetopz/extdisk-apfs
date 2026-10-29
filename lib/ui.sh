@@ -42,6 +42,11 @@ shell_quote() {
   printf '%s' "$out"
 }
 
+# The default lives here, next to the function that reads it, so that a module
+# sourced on its own by a test behaves as it does under bin/extdisk-apfs.
+# --dry-run sets it to 1.
+DRY_RUN="${DRY_RUN:-0}"
+
 # run_cmd <command...>
 # Prints the command as a shell would need it typed, then runs it unless
 # DRY_RUN is 1.
