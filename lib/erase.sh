@@ -5,12 +5,29 @@
 # APFS volume. This is a repartition, not an overwrite of every block, which is
 # what reuse needs; see the "What This Does Not Do" section of the README.
 do_erase() {
-  disk="$1"
-  label="$2"
-  personality="$3"
+  local disk="$1" label="$2" personality="$3"
   heading "Erasing $disk"
   run_cmd diskutil eraseDisk "$personality" "$label" GPT "/dev/$disk" ||
     die "diskutil eraseDisk failed; the disk may be left unformatted, and rerunning is safe"
+}
+
+# new_volume_mount_point <whole-disk>
+# The mount point of the volume that the erase just created, read from
+# diskutil. Building /Volumes/<label> instead would be wrong: when a volume of
+# that name is already mounted, macOS mounts the new one under a different
+# path, and the post-format commands would then run against the older volume.
+# /Volumes/Macintosh HD is a symlink to / on a stock system, so that mistake
+# can reach the boot volume.
+new_volume_mount_point() {
+  local disk="$1" vol mp
+  for vol in $(dk_apfs_volumes_of_disk "$disk"); do
+    mp="$(dk_get "$vol" MountPoint)"
+    if [ -n "$mp" ]; then
+      printf '%s\n' "$mp"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # enable_owners <mount-point>
@@ -18,7 +35,7 @@ do_erase() {
 # belong to the mounting user. Developer tooling that checks file ownership,
 # and anything restoring a tree with mixed owners, needs ownership honoured.
 enable_owners() {
-  mp="$1"
+  local mp="$1"
   heading "Enabling ownership on $mp"
   say "This needs an administrator password."
   run_cmd sudo diskutil enableOwnership "$mp" ||
@@ -32,19 +49,19 @@ enable_owners() {
 # exclusion on a volume is undefined, so -v is not optional here. Erasing the
 # volume resets Time Machine to its default behaviour for the new volume.
 exclude_from_time_machine() {
-  mp="$1"
+  local mp="$1"
   heading "Excluding $mp from Time Machine"
   say "This needs an administrator password, and Terminal needs Full Disk Access."
   run_cmd sudo tmutil addexclusion -v "$mp" ||
-    warn "could not add the Time Machine exclusion for $mp; grant Full Disk Access to your terminal and rerun 'sudo tmutil addexclusion -v $mp'"
+    warn "could not add the Time Machine exclusion; grant Full Disk Access to your terminal and rerun: sudo tmutil addexclusion -v $(shell_quote "$mp")"
 }
 
 # disable_spotlight <mount-point>
-# Spotlight indexing of a build-artifact volume costs CPU and disk on every
-# build. Re-enable it with: sudo mdutil -i on <mount-point>
+# Turns off indexing of the volume. Re-enable it with: sudo mdutil -i on <mp>
 disable_spotlight() {
-  mp="$1"
+  local mp="$1"
   heading "Disabling Spotlight indexing on $mp"
+  say "This needs an administrator password."
   run_cmd sudo mdutil -i off "$mp" ||
     warn "could not disable Spotlight indexing on $mp"
 }

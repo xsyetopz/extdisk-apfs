@@ -1,4 +1,4 @@
-# ui.sh - terminal output and the typed confirmation prompt.
+# ui.sh - terminal output, command echoing, and the typed confirmation prompt.
 # Sourced by bin/extdisk-apfs. Not executable on its own.
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -27,10 +27,26 @@ die() {
   exit 1
 }
 
+# shell_quote <word...>
+# Renders the words as a command line that a shell would parse back into
+# exactly these words. Echoing "$*" instead would lose the word boundaries, so
+# a printed command containing a space would differ from the command that ran.
+# printf %q is a bash builtin since bash 2, so it is available in the bash 3.2
+# that macOS ships, and it is the only quoter guaranteed to agree with the
+# shell that is doing the parsing.
+shell_quote() {
+  local arg out=''
+  for arg in "$@"; do
+    out="${out:+$out }$(printf '%q' "$arg")"
+  done
+  printf '%s' "$out"
+}
+
 # run_cmd <command...>
-# Prints the command, then runs it unless DRY_RUN is 1.
+# Prints the command as a shell would need it typed, then runs it unless
+# DRY_RUN is 1.
 run_cmd() {
-  printf '%s$ %s%s\n' "$C_DIM" "$*" "$C_OFF"
+  printf '%s$ %s%s\n' "$C_DIM" "$(shell_quote "$@")" "$C_OFF"
   if [ "${DRY_RUN:-0}" = "1" ]; then
     return 0
   fi
@@ -39,9 +55,9 @@ run_cmd() {
 
 # confirm_identifier <expected-identifier>
 # Requires the operator to retype the disk identifier, so that a wrong
-# identifier on the command line cannot destroy a disk by itself.
+# identifier on the command line cannot destroy a disk on its own.
 confirm_identifier() {
-  expected="$1"
+  local expected="$1" typed=''
   if [ ! -t 0 ]; then
     die "stdin is not a terminal, so the erase cannot be confirmed; rerun with --force only if you are sure of $expected"
   fi
@@ -53,7 +69,7 @@ confirm_identifier() {
 }
 
 # human_size <bytes>
-# Formats a byte count the way diskutil reports it, in decimal GB.
+# Formats a byte count the way diskutil reports it, in decimal units.
 human_size() {
   awk -v b="${1:-0}" 'BEGIN {
     if (b >= 1000000000000) printf "%.1f TB", b / 1000000000000;

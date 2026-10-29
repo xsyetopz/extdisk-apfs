@@ -17,16 +17,26 @@ Replace `/Volumes/X` with your volume's mount point.
 ### Xcode Derived Data and Archives
 
 The GUI setting is **Xcode > Settings > Locations**, which holds the Derived
-Data and Archives locations. On the command line:
+Data and Archives locations. That pane is the Xcode user interface, so it is
+not verifiable from a man page; everything else in this section was read from
+the installed tool.
+
+On the command line, as complete commands:
 
 ```
-xcodebuild -derivedDataPath /Volumes/X/DerivedData
-xcodebuild -archivePath /Volumes/X/Archives/MyApp.xcarchive archive
+xcodebuild -scheme MyApp -derivedDataPath /Volumes/X/DerivedData build
+xcodebuild -scheme MyApp -archivePath /Volumes/X/Archives/MyApp.xcarchive archive
 ```
 
 `xcodebuild -help` describes `-derivedDataPath` as "specifies the directory
-where build products and other derived data will go". `man xcodebuild` describes
-`-archivePath` as the path for the archive produced by the archive action.
+where build products and other derived data will go".
+
+The two installed sources disagree about `-archivePath`, so both are quoted
+here. `man xcodebuild`: "Specifies the path for the archive produced by the
+archive action, or specifies the archive that should be exported". `xcodebuild
+-help`: "specifies the directory where any created archives will be placed, or
+the archive that should be exported". Pass a `.xcarchive` path for a single
+archive and check the result, rather than relying on either reading.
 
 Caveat: the flags apply to one `xcodebuild` invocation. The Locations pane is
 what changes the behaviour of the Xcode application itself.
@@ -109,8 +119,9 @@ documented switch, not a benchmarked one.
 
 ### Logic Pro and MainStage Sound Library
 
-Apple documents moving the Sound Library at
-<https://support.apple.com/en-us/111094>:
+This section comes from Apple's support article at
+<https://support.apple.com/en-us/111094>, not from an installed tool, so check
+the page for your Logic Pro version before following it:
 
 - Logic Pro 12 and MainStage 4 and later: drag `~/Music/Logic Pro Library.bundle`
   to the external drive.
@@ -146,10 +157,11 @@ For each item here, the installed tool offers no path option. A symlink from the
 default location to the external volume is the only remaining approach, and it
 is a workaround, not a supported configuration.
 
-The failure mode of every such symlink is the same: when the volume is not
-mounted, the link dangles. The tool then either errors out or recreates the
-directory on the boot disk, which silently undoes the move and refills the
-internal disk.
+The risk of every such symlink is the same: when the volume is not mounted, the
+link dangles. What a given tool then does was not tested here, and it varies.
+The outcome to watch for is a tool that recreates the directory on the boot
+disk, because that silently undoes the move and refills the internal disk
+without an error.
 
 ### Simulator Runtimes
 
@@ -172,8 +184,9 @@ what would be removed without removing it.
 
 `~/Library/Developer/Xcode/iOS DeviceSupport` holds symbol files for connected
 devices. No flag for it appears in `xcodebuild -help` or `xcrun simctl help`.
-Xcode recreates the contents when a device is connected, so deleting old
-versions is the cheaper move.
+Deleting the directories for OS versions you no longer debug is the simpler
+option than symlinking the whole folder. Whether Xcode refetches them on the
+next device connection was not tested here.
 
 ### Audio Unit Plug-Ins
 
@@ -196,5 +209,9 @@ Stated here so that nobody treats the list above as complete:
   `simctl --set` device set.
 - Whether Spotlight or Time Machine exclusion changes build times.
 - Audio Unit bundles and Apple Loops on an external volume.
-- Everything above was read on macOS Darwin 27.2.0 with one Xcode install. No
-  claim is made for other versions.
+- The two Apple support pages linked here were not opened from this machine.
+  They are cited as the source of their claims, not confirmed by it.
+- The names of GUI panes, such as Xcode > Settings > Locations and Logic Pro's
+  Sound Library menu, were not checked against a running application.
+- Everything else above was read on macOS Darwin 27.2.0 with one Xcode install.
+  No claim is made for other versions.

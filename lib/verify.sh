@@ -4,7 +4,7 @@
 # Prints the partition map, the APFS container, the volume, and the mounted
 # capacity, then verifies the map. Read-only: it changes nothing.
 verify_disk() {
-  disk="$1"
+  local disk="$1" part container='' store='' vol name mp
   dk_exists "$disk" || die "diskutil does not know '$disk'"
 
   heading "Partition map of $disk"
@@ -15,7 +15,6 @@ verify_disk() {
   printf '  bus:     %s\n' "$(dk_get "$disk" BusProtocol)"
   printf '  size:    %s\n' "$(human_size "$(dk_get "$disk" TotalSize)")"
 
-  container=''
   for part in $(dk_list_get AllDisks "$disk"); do
     if [ "$(dk_get "$part" Content)" = "Apple_APFS" ]; then
       container="$(dk_container_of "$part")"
@@ -38,7 +37,9 @@ verify_disk() {
     mp="$(dk_get "$vol" MountPoint)"
     printf '  %-10s %-24s %s\n' "$vol" "$name" "${mp:-not mounted}"
     printf '    filesystem:  %s\n' "$(dk_get "$vol" FilesystemName)"
-    printf '    mounted:     %s\n' "$(dk_get "$vol" MountPoint >/dev/null && echo yes || echo no)"
+    # Tested on the string, because dk_get always exits 0 and so cannot carry
+    # this answer in its exit status.
+    printf '    mounted:     %s\n' "$([ -n "$mp" ] && echo yes || echo no)"
     printf '    owners:      %s\n' \
       "$([ "$(dk_get "$vol" GlobalPermissionsEnabled)" = "true" ] && echo enabled || echo disabled)"
     printf '    free space:  %s\n' "$(human_size "$(dk_get "$vol" APFSContainerFree)")"
