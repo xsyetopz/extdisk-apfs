@@ -19,7 +19,7 @@ extdisk-apfs unhost /Volumes/X         # undo exactly that
 `host` creates the directories, then acts by mechanism:
 
 | Mechanism | What happens |
-|---|---|
+| --- | --- |
 | `cli` | The tool's own command runs, such as `npm config set cache=PATH`. Persistent, and `unhost` runs the documented undo. |
 | `env` | The variable goes into a marked block in your shell startup file. `unhost` removes the block. |
 | `flag` | Printed. A per-invocation flag such as `xcodebuild -derivedDataPath` has nothing to persist. |
@@ -62,7 +62,7 @@ Tab-separated, twelve fields. `extdisk-apfs validate` checks every row, and so
 does `tests/run`, so a malformed row fails CI.
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `id` | kebab-case and unique. This is what `--only` and `explain` take. |
 | `category` | `dev`, `apple`, `audio` or `container`. |
 | `name` | What a person reads. |
