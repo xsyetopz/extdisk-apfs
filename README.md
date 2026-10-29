@@ -24,7 +24,7 @@ renumbered on every attach, so `disk4` today can be a different disk tomorrow.
 ## Install
 
 ```
-git clone https://github.com/USER/extdisk-apfs.git
+git clone https://github.com/xsyetopz/extdisk-apfs.git
 cd extdisk-apfs
 ./bin/extdisk-apfs list
 ```

@@ -5,7 +5,7 @@
 # identification and the refusals around them, because the destructive step
 # takes a disk identifier and identifiers are renumbered on every attach.
 #
-# Repository: https://github.com/USER/extdisk-apfs
+# Repository: https://github.com/xsyetopz/extdisk-apfs
 # License: MIT
 
 set -euo pipefail
