@@ -157,12 +157,13 @@ supported way to move the folder.
 ## The Simulator
 
 The simulator is its own long story, and the answer for an external volume is
-almost entirely no. [simulator-storage.md](simulator-storage.md) has it: device
-sets take a `--set` path but creating a device in a set on an external volume
-fails with a permission error from `CoreSimulatorService`, symlinking the CoreSimulator directories breaks both runtime installation and
-device creation, the runtime itself lives in a system asset location, and the
-only part the volume can hold is the downloaded installer bundle. It also
-explains why there is no iPadOS runtime to install.
+almost entirely no. [simulator-storage.md](simulator-storage.md) has it: a
+`--set` device set works at any path on the boot volume but fails on an external
+one with a permission error from `CoreSimulatorService`, symlinking the
+CoreSimulator directories breaks both runtime installation and device creation,
+the runtime itself lives in a system asset location, and the only part the
+volume can hold is the downloaded installer bundle. It also explains why there
+is no iPadOS runtime to install.
 
 ## Spotlight
 
@@ -237,7 +238,7 @@ other two.
 | `IDECustomDistributionArchivesLocation` is honoured, and holds a parent | `xcodebuild archive` with the key set and no `-archivePath`, then `find -maxdepth 2` on the volume and `ls` of the default location, which did not exist |
 | The bare `defaults write` template works | `extdisk-apfs host --only xcode-derived-data,xcode-archives`, then `defaults read` returned both paths |
 | A device set on the volume fails with `EPERM` from `CoreSimulatorService` | `simctl --set` create on the volume, which stuck in `Creating`, then `CoreSimulator.log` (`Code=513` wrapping `Code=1`), against a successful `touch` and `cp -R` as the same user |
-| A TCC denial causes that `EPERM` | Inference only: the best explanation of `EPERM` on a writable path. No grant was tried, and whether the daemon can be granted access is unknown |
+| The daemon's removable-volume access causes that `EPERM` | Narrowed by elimination, not observed: `ditto` of the runtime's `SampleContent` onto the volume as the user succeeded, and `simctl --set` create succeeded at `/tmp` and in the home directory, so only the daemon's access to this volume is left. No grant was tried, because `CoreSimulatorService` is absent from the Files and Folders pane and `Terminal` there has no Removable Volumes row |
 | Symlinking `CoreSimulator/Caches` breaks runtime install | `xcodebuild -downloadPlatform iOS` through the symlink, which failed at registration |
 | Symlinking `CoreSimulator/Devices` breaks device creation | `simctl create` through the symlink, plus `CoreSimulator.log` holding the same "copying sample content" failure at a `Devices` path and at a `--set` path with no symlink |
 | The installer export lands on the volume | `xcodebuild -downloadPlatform iOS -buildVersion 27.2 -exportPath` on the volume, then `du -sh` (7.7 GB) and `ls` of `iphonesimulator_27.2_24B114.exportedBundle` |
@@ -246,7 +247,7 @@ other two.
 | The default set holds 11 iOS 27.2 devices | `xcrun simctl list devices` after the runtime registered: 5 iPhones and 6 iPads, all `Shutdown`; `iPhone 18 Pro` was booted, reported `Booted`, and shut down |
 | Runtimes install and run once those paths are real | `simctl runtime list`, then `simctl create` and `simctl boot` of an iPhone 18 Pro on iOS 27.2 |
 | SwiftPM path flags | `swift build --help` |
-| `simctl --set` is honoured | `simctl --set` on a missing path, which it rejects by name |
+| `simctl --set` is honoured | `simctl --set` on a missing path, which it rejects by name, and two creates in sets at `/tmp/dsprobe` and `~/dsprobe-home`, each returning a device UUID |
 | `CORESIMULATOR_DEVICE_SET_PATH` absent | `strings` on `CoreSimulator` and `simctl` |
 | Runtimes have no path option | `xcrun simctl help runtime` |
 | `.noindex` excludes a directory | `mdfind` on two sibling directories holding the same file |
@@ -259,7 +260,8 @@ other two.
 
 The two location keys and the simulator claims were verified by running
 `xcodebuild`, `simctl` and a simulator boot, except `-importPlatform` (not run)
-and the TCC cause of the `EPERM` (an inference). What is still unverified here was
+and the removable-volume cause of the `EPERM`, which is narrowed by elimination
+rather than observed, because no grant could be made. What is still unverified here was
 not verified against a running Xcode.app, Logic Pro or MainStage window: the
 settings window was not opened, so that it stores the same keys is not observed,
 and neither Logic Pro nor MainStage is installed. Where that mattered, the claim

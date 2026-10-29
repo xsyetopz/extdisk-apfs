@@ -10,9 +10,12 @@ for each claim is in the table in
 The short answer: as tested on this machine, nothing simulator-related could be
 stored on the external volume except the downloaded runtime installer. The
 runtime is in a system asset location by design, and creating a device in a set
-on the volume fails with `EPERM` from `CoreSimulatorService`. A TCC denial is
-the most likely cause, but no permission grant was tried, so that is an
-inference.
+on the volume fails with `EPERM` from `CoreSimulatorService`, while the same
+command succeeds on any path on the boot volume and the same user copies the
+same content onto the external volume without trouble. That leaves the daemon's
+access to a removable volume as the only explanation standing, though no grant
+could be made to confirm it, because the daemon is absent from the Files and
+Folders pane.
 
 ## Device Sets Take a Path
 
@@ -27,6 +30,11 @@ Provided set path does not exist: /tmp/dsprobe/set2
 
 The directory must exist first. The default set stays at
 `~/Library/Developer/CoreSimulator`.
+
+The flag does more than pass validation: `simctl --set /tmp/dsprobe create` and
+`simctl --set ~/dsprobe-home create` each returned a device UUID and populated
+the set, so a working device set can live at any path on the boot volume,
+including one outside `~/Library/Developer/CoreSimulator`.
 
 ```bash
 mkdir -p /Volumes/X/CoreSimulator
@@ -60,19 +68,36 @@ CoreSimulatorService: Error copying sample content to path
 NSUnderlyingError={Error Domain=NSPOSIXErrorDomain Code=1 "Operation not permitted"}
 ```
 
-The error is `EPERM`, not `EACCES`, and the same user can `touch` and `cp -R` in
-that directory. That points away from file permissions. The most likely
-explanation is a TCC denial of removable-volume access, but that is an
-inference: no app or daemon was granted access and the create retried, so it
-is not an observed fact. It is also unknown whether `CoreSimulatorService`, a
-launchd daemon, can be granted that access at all, or whether macOS attributes
-the request to a responsible process such as the terminal or Xcode.
+The error is `EPERM`, not `EACCES`. Four tests narrow the cause to the daemon's
+access to this volume specifically, and rule out everything else:
 
-Untried: the Removable Volumes permission under System Settings > Privacy &
-Security > Files and Folders, which Apple's Logic Pro page tells you to enable
-when relocation is refused. The daemon may not appear in that list. In the one
-configuration tested, a `--set` directory on this volume, no device could be
-created.
+| Test | Result |
+| --- | --- |
+| `ditto` the runtime's whole `SampleContent` tree to the volume, as the user | succeeded, all 79 entries, identical to the same copy onto the boot volume |
+| `simctl --set /tmp/dsprobe create` | succeeded, device UUID returned |
+| `simctl --set ~/dsprobe-home create` | succeeded, device UUID returned |
+| `simctl --set /Volumes/X/CoreSimulator create` | failed, `EPERM` |
+
+So the daemon writes to arbitrary paths on the boot volume, including ones
+outside its own `~/Library/Developer/CoreSimulator` root, and the same user
+copies the same root-owned content onto this volume without trouble. Neither the
+`--set` flag, the sample content, the file ownership, nor the volume's APFS
+settings explains the failure. What is left is the daemon's own access to a
+removable volume.
+
+That still falls one step short of proof, because no grant was made and the
+create retried. The grant could not be made: `CoreSimulatorService` does not
+appear under System Settings > Privacy & Security > Files and Folders, and the
+`Terminal` entry there offers `Network Volumes` but no `Removable Volumes` row,
+so there is nothing to switch on. Adding the daemon by hand under Full Disk
+Access, at
+`/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/com.apple.CoreSimulator.CoreSimulatorService.xpc`,
+is the remaining untried route.
+
+The daemon is not sandbox-restricted in a way that explains this either:
+`codesign -d --entitlements -` on that bundle reports only
+`com.apple.CoreSimulator.simdiskimaged.manager`, with no app-sandbox
+entitlement, and the unified log recorded no sandbox denial for it.
 
 **Replacing the directories with symlinks does not work either**, and each one
 fails in its own way. `~/Library/Developer/CoreSimulator/Caches` symlinked to
