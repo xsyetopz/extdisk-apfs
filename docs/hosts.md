@@ -123,9 +123,17 @@ Two honest gaps:
   CocoaPods names no cache-directory setting; OrbStack documents no data
   location; Steam's macOS help page, Arturia's support site and Steinberg's
   help centre all refused an automated read; and Apple documents no external
-  location for GarageBand's sound library. Likewise, `pnpm config set store-dir`
-  and `pip config set global.cache-dir` appear in no page that was read, so
-  `pnpm-store` is a `file` entry and `pip-cache` uses `PIP_CACHE_DIR`.
+  location for GarageBand's sound library. Likewise, `pip config set
+  global.cache-dir` appears in no page that was read, so `pip-cache` uses
+  `PIP_CACHE_DIR`.
+- **pnpm's global configuration file is platform-specific**, and only
+  [pnpm's `config` page](https://pnpm.io/cli/config) gives the paths. The
+  macOS one is `~/Library/Preferences/pnpm/config.yaml`; the `~/.config/pnpm`
+  path that most writing quotes is the Linux one, and pnpm on macOS ignores it
+  unless `XDG_CONFIG_HOME` is set. The `storeDir` key comes from
+  [the store settings page](https://pnpm.io/settings/store). `pnpm config set`
+  is documented, but neither page spells the store key as a command argument,
+  so `pnpm-store` stays a `file` entry rather than becoming a `cli` one.
 
 [docs/external-storage.md](external-storage.md) is the long-form evidence for
 the Xcode, simulator, Spotlight, Time Machine and Audio Unit claims, including
