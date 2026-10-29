@@ -6,15 +6,13 @@
 #
 # The destructive path cannot be tested here: an erase has no safe target on a
 # CI runner. Set EXTDISK_TEST_DISK to an external disk identifier to also run
-# the dry run against real hardware.
+# the dry run against real hardware. The simdisk tests are in tests/run-simdisk.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/extdisk-apfs"
-PASS=0
-FAIL=0
-SKIP=0
+# shellcheck source=helpers.sh
+. "$ROOT/tests/helpers.sh"
 
 # shellcheck source=../lib/ui.sh
 . "$ROOT/lib/ui.sh"
@@ -26,60 +24,10 @@ SKIP=0
 . "$ROOT/lib/erase.sh"
 # shellcheck source=../lib/hosts.sh
 . "$ROOT/lib/hosts.sh"
+# shellcheck source=../lib/envblock.sh
+. "$ROOT/lib/envblock.sh"
 # shellcheck source=../lib/adopt.sh
 . "$ROOT/lib/adopt.sh"
-
-# A scratch directory for the catalogue fixtures and the shell startup file
-# that the env-block tests write. Removed on exit, including on a failure.
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/extdisk-tests.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
-
-pass() {
-  PASS=$((PASS + 1))
-  printf '  ok    %s\n' "$1"
-}
-
-fail() {
-  FAIL=$((FAIL + 1))
-  printf '  FAIL  %s\n' "$1" >&2
-  [ -z "${2:-}" ] || printf '        %s\n' "$2" >&2
-}
-
-skip() {
-  SKIP=$((SKIP + 1))
-  printf '  skip  %s (%s)\n' "$1" "$2"
-}
-
-# exits_zero <description> <command...>
-exits_zero() {
-  local desc="$1" out
-  shift
-  if out="$("$@" 2>&1)"; then
-    pass "$desc"
-  else
-    fail "$desc" "exit $?: $(printf '%s' "$out" | tail -n 1)"
-  fi
-}
-
-# exits_nonzero <description> <command...>
-exits_nonzero() {
-  local desc="$1" out
-  shift
-  if out="$("$@" 2>&1)"; then
-    fail "$desc" 'exit 0, so it was accepted'
-  else
-    pass "$desc"
-  fi
-}
-
-# equals <description> <expected> <actual>
-equals() {
-  if [ "$2" = "$3" ]; then
-    pass "$1"
-  else
-    fail "$1" "wanted '$2', got '$3'"
-  fi
-}
 
 # The disk to read facts from and to be refused. Derived rather than written as
 # disk0, because a virtual machine, a CI runner and a Mac with a Fusion Drive
@@ -380,6 +328,62 @@ else
 fi
 equals 'the unbalanced file keeps all three lines' 3 "$(grep -c '' "$ENVF_U")"
 
+printf '\nenv_block_put\n'
+ENVF_P="$TMP/zshenv-put"
+: >"$ENVF_P"
+EXTDISK_ENV_FILE="$ENVF_P" env_block_put 'one' 'test block' 'FIRST line' >/dev/null 2>&1
+equals 'the lines go in as given, with no export prefix' 1 "$(grep -c '^FIRST line$' "$ENVF_P")"
+equals 'no line gets an export prefix' 0 "$(grep -c '^export ' "$ENVF_P")"
+EXTDISK_ENV_FILE="$ENVF_P" env_block_put 'one' 'test block' 'SECOND line' >/dev/null 2>&1
+equals 'a second call replaces its own block' 1 "$(grep -c '^# >>> extdisk-apfs one >>>$' "$ENVF_P")"
+equals 'the replaced line is gone' 0 "$(grep -c '^FIRST line$' "$ENVF_P")"
+equals 'the new line is there' 1 "$(grep -c '^SECOND line$' "$ENVF_P")"
+EXTDISK_ENV_FILE="$ENVF_P" env_block_put 'two' 'test block' 'THIRD line' >/dev/null 2>&1
+equals 'two keys make two blocks' 2 "$(grep -c '^# >>> extdisk-apfs ' "$ENVF_P")"
+EXTDISK_ENV_FILE="$ENVF_P" env_block_put 'two' 'test block' 'FOURTH line' >/dev/null 2>&1
+equals 'replacing one key leaves the other key alone' 1 "$(grep -c '^SECOND line$' "$ENVF_P")"
+env_block_strip "$ENVF_P" 'one'
+equals 'stripping one key leaves the other block' 1 "$(grep -c '^FOURTH line$' "$ENVF_P")"
+
+printf '\nenv_block_read\n'
+ENVF_R="$TMP/zshenv-read"
+printf 'export EDITOR=vi\n' >"$ENVF_R"
+EXTDISK_ENV_FILE="$ENVF_R" env_block_put 'alpha' 'test block' 'A1 line' 'A2 line' >/dev/null 2>&1
+EXTDISK_ENV_FILE="$ENVF_R" env_block_put 'beta' 'test block' 'B1 line' >/dev/null 2>&1
+equals 'it returns the lines of its own block' 'A1 line
+A2 line' "$(env_block_read "$ENVF_R" alpha)"
+equals 'a second block with another key does not leak in' 'B1 line' "$(env_block_read "$ENVF_R" beta)"
+equals 'it returns nothing for a key that is not there' '' "$(env_block_read "$ENVF_R" gamma)"
+equals 'it returns nothing for a missing file' '' "$(env_block_read "$TMP/no-such-zshenv" alpha)"
+
+printf '\nenv_block_put is idempotent\n'
+ENVF_I="$TMP/zshenv-idem"
+printf 'export EDITOR=vi\n' >"$ENVF_I"
+EXTDISK_ENV_FILE="$ENVF_I" env_block_put 'same' 'test block' 'ONE line' 'TWO line' >/dev/null 2>&1
+FILES_BEFORE="$(ls "$ENVF_I"*)"
+CONTENT_BEFORE="$(cat "$ENVF_I")"
+# The backup name carries a timestamp in seconds. Without the wait, a second
+# write in the same second would overwrite the first backup and the list would
+# look the same, so a regression would pass.
+sleep 1
+EXTDISK_ENV_FILE="$ENVF_I" env_block_put 'same' 'test block' 'ONE line' 'TWO line' >/dev/null 2>&1
+equals 'the same lines again create no second backup' "$FILES_BEFORE" "$(ls "$ENVF_I"*)"
+equals 'the same lines again leave the file as it was' "$CONTENT_BEFORE" "$(cat "$ENVF_I")"
+
+printf '\nenv_block_write with no pairs\n'
+ENVF_N="$TMP/zshenv-none"
+printf 'export EDITOR=vi\n' >"$ENVF_N"
+# bash -u as /bin/bash (3.2 on macOS): an empty array expanded under set -u is
+# an unbound variable there, which is the bug this guards.
+export EXTDISK_ENV_FILE="$ENVF_N"
+# shellcheck disable=SC2016  # the script body expands in the child bash, not here
+exits_zero 'no pairs exits 0 under bash -u' \
+  /bin/bash -u -c '. "$1"; . "$2"; env_block_write /Volumes/Probe' _ "$ROOT/lib/ui.sh" "$ROOT/lib/envblock.sh"
+unset EXTDISK_ENV_FILE
+equals 'no pairs writes no block' 0 "$(grep -c 'extdisk-apfs' "$ENVF_N")"
+equals 'no pairs leaves the file as it was' 'export EDITOR=vi' "$(cat "$ENVF_N")"
+equals 'no pairs makes no backup' "$ENVF_N" "$(ls "$ENVF_N"*)"
+
 printf '\nthe host commands\n'
 exits_zero 'hosts' "$BIN" hosts
 exits_zero 'hosts --all' "$BIN" hosts --all
@@ -431,7 +435,18 @@ if [ -n "${EXTDISK_TEST_VOLUME:-}" ]; then
   export EXTDISK_ENV_FILE="$TMP/hardware-zshenv"
   # The volume may be empty or already hosted, so the check is that the dry
   # runs leave its top-level entries as they were, not that one is absent.
-  VOLUME_BEFORE="$(find "$EXTDISK_TEST_VOLUME" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)"
+  #
+  # The status matters, not only the output. A volume that unmounts during the
+  # run makes find print nothing and exit non-zero, and comparing that to the
+  # entries taken before would report every entry as created by a dry run. That
+  # happened once on this machine, so the snapshot is taken through a function
+  # that reports the failure instead of an empty list.
+  volume_entries() { # <volume>; prints the entries, non-zero if it cannot read it
+    find "$1" -mindepth 1 -maxdepth 1 2>/dev/null | LC_ALL=C sort
+    return "${PIPESTATUS[0]}"
+  }
+  VOLUME_READABLE=1
+  VOLUME_BEFORE="$(volume_entries "$EXTDISK_TEST_VOLUME")" || VOLUME_READABLE=0
   exits_zero "hosts $EXTDISK_TEST_VOLUME" "$BIN" hosts "$EXTDISK_TEST_VOLUME"
   exits_zero "host $EXTDISK_TEST_VOLUME --dry-run" \
     "$BIN" host "$EXTDISK_TEST_VOLUME" --dry-run
@@ -443,8 +458,19 @@ if [ -n "${EXTDISK_TEST_VOLUME:-}" ]; then
     "$BIN" unhost "$EXTDISK_TEST_VOLUME" --dry-run
   exits_zero "explain with $EXTDISK_TEST_VOLUME" \
     "$BIN" explain homebrew-cache "$EXTDISK_TEST_VOLUME"
-  VOLUME_AFTER="$(find "$EXTDISK_TEST_VOLUME" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)"
-  if [ "$VOLUME_BEFORE" = "$VOLUME_AFTER" ]; then
+  # This machine's own HOME, not a scratch one. A dry run writes nothing, and
+  # the device set path and the image's attachment are what simdisk decides on:
+  # with a scratch HOME, an image already attached at the real set path reads as
+  # attached elsewhere, which is a refusal and the right one.
+  exits_zero "simdisk $EXTDISK_TEST_VOLUME --dry-run" \
+    "$BIN" simdisk "$EXTDISK_TEST_VOLUME" --dry-run
+  exits_zero "simdisk $EXTDISK_TEST_VOLUME --undo --dry-run" \
+    "$BIN" simdisk "$EXTDISK_TEST_VOLUME" --undo --dry-run
+  VOLUME_AFTER="$(volume_entries "$EXTDISK_TEST_VOLUME")" || VOLUME_READABLE=0
+  if [ "$VOLUME_READABLE" = "0" ]; then
+    skip 'a dry run creates no directory' \
+      "$EXTDISK_TEST_VOLUME could not be listed, so the two snapshots are not comparable"
+  elif [ "$VOLUME_BEFORE" = "$VOLUME_AFTER" ]; then
     pass 'a dry run creates no directory'
   else
     fail 'a dry run creates no directory' "entries changed: $(printf '%s\n%s\n' "$VOLUME_BEFORE" "$VOLUME_AFTER" | LC_ALL=C sort | uniq -u | tr '\n' ' ')"

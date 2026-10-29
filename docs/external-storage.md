@@ -163,7 +163,9 @@ one with a permission error from `CoreSimulatorService`, symlinking the
 CoreSimulator directories breaks both runtime installation and device creation,
 the runtime itself lives in a system asset location, and the only part the
 volume can hold is the downloaded installer bundle. It also explains why there
-is no iPadOS runtime to install.
+is no iPadOS runtime to install. The device data can live on the volume inside
+a disk image, which `extdisk-apfs simdisk` sets up; see
+[simulator-disk-image.md](simulator-disk-image.md).
 
 ## Spotlight
 
@@ -219,8 +221,10 @@ the current path.
 
 ## How Each Claim Was Checked
 
-This table covers all three storage documents: this file,
-[simulator-storage.md](simulator-storage.md) and
+This table covers the storage documents: this file,
+[simulator-storage.md](simulator-storage.md) (and its two companions,
+[simulator-disk-image.md](simulator-disk-image.md) and
+[simulator-startup-line.md](simulator-startup-line.md)) and
 [audio-storage.md](audio-storage.md). Some rows are for text that lives in the
 other two.
 
@@ -257,11 +261,30 @@ other two.
 | Logic Pro procedure and requirements | Apple support pages 111094 and 102239 |
 | Apple Loops excluded from relocation | Logic Pro 10.4 user guide |
 | `HOMEBREW_CACHE`, `bun --cache-dir` | `man brew`, `bun install --help` |
+| A mount over a non-empty directory shadows it, and eject brings it back | A file `underneath.txt` in the directory, checked with `ls` while the image was mounted (gone) and after `diskutil eject` (back) |
+| The image mounts at the default device set and the simulator works there | `diskutil image attach --mountPoint` at `~/Library/Developer/CoreSimulator/Devices`, then `simctl list devices available` (11 devices, the image's own), `simctl create` with no `--set` (a UUID returned) and `simctl boot` (reported `Booted`) |
+| A second mount on a mounted path stacks and hides the first | `mount` listed `/dev/disk9s1` and `/dev/disk11s1` on `/Volumes/SimDevices`, and the directory listing dropped from 12 entries to 1 until the eject. Seen by accident, not set up as an experiment |
+| A LaunchAgent cannot attach an image on the external volume or read it | One diagnostic LaunchAgent that logged: boot-volume image attach exit 0, external-volume image attach `Operation not permitted`, a plain read of a file on the volume failed. The shell that succeeds fails to read `TCC.db`, so it has no Full Disk Access. Consistent with the removable-volume restriction; no grant was tried, so the mechanism is not identified |
+| Xcode reads the mounted device set | `xcrun xctrace list devices` listed the simulators with the image's UUIDs. That is Xcode's tooling, not `simctl`. No Xcode window was observed and there is no `Simulator.app` on this machine |
+| `hdiutil create`, `attach` and `detach` are deprecated, and `hdiutil info` is not | The warning each printed on stderr under macOS 27.2, naming the `diskutil` replacement; `hdiutil info 2>err >/dev/null` left `err` at 0 bytes |
+| A sparse bundle grows on demand | A `--size 60g` image read 12M when new and 562M after one device was created and booted. The command that read the size was not recorded |
+| `diskutil image attach` ignores `--mountPoint` for an image that is already attached | A scratch image attached at `/private/tmp/elsewhere/a`, then attached again with `--mountPoint /private/tmp/elsewhere/b`: it printed `/private/tmp/elsewhere/a`, exited 0, and `mount` showed one mount. Then `simdisk /Volumes/DevAudioStore` against the live image attached at `/private/tmp/elsewhere-mp` exited 1 with the refusal |
+| A second attach of the same image at the same point is a no-op, and so are two concurrent ones | `mount` count stayed 1 after the second attach, and stayed 1 after two attaches started together |
+| The `mount` test in the startup line is what stops a second volume's block stacking a mount | A second block naming the same set path stacked a mount (measured, as above); `diskutil` covers only the same image at the same point |
+| `simdisk` run twice writes the startup file once | The second run printed `skipped: the block ... is already this`, and the count of `.extdisk-backup` files stayed at 2. The tests in `tests/run` assert the file list and contents |
+| `simdisk --undo` works with the drive unplugged, and refuses the boot volume | `simdisk /Volumes/GoneDrive --undo` exited 0 with both steps skipped; `simdisk / --undo` exited 1 with `is on the boot volume` |
+| A booted simulator holds the mounted device set open | `lsof` on the mounted device set counted 227 open handles with one simulator booted and 0 after `xcrun simctl shutdown all`, macOS 27.2. That this causes the not-ejected-properly report is inferred, not observed |
+| `simdisk --undo` refuses while a simulator is booted, and changes nothing | `tests/run-simdisk`, section `a booted simulator stops the eject`: stand-in `xcrun` and `hdiutil`; the call exited non-zero with the startup block kept, and exited 0 with the block removed when nothing was booted. Not run against a real booted simulator |
+| A `simctl` that fails warns and does not end `--undo` | A stand-in `xcrun` exiting 72 ended the run at the assignment with no output, before the fix. After it, the same stand-in through `bin/extdisk-apfs`, which is where `set -euo pipefail` is in force, exits 0. Both are checks in `tests/run-simdisk` |
+| The drive will not eject while the image is attached | An eject of `/Volumes/DevAudioStore` with the image mounted at the device set failed, and `diskarbitrationd` logged `unmount call ... returned (status code 0x00000010)`, which is `EBUSY`; macOS showed `Disk Not Ejected Properly`. No USB attach or detach event was in the log for that minute, and `disk4` kept its identifier, so the drive did not leave the bus. Which process asked for the eject is redacted by `diskarbitrationd` |
+| One eject while the image was in use caused no file system damage but a rebuilt device set | `diskutil verifyVolume` on the SSD (`/dev/rdisk5s1 ... appears to be OK`, `container /dev/rdisk5 appears to be OK`, exit 0) and on the volume inside the image; the 11 stock device folders in the image were replaced by 11 fresh ones (how they were counted was not recorded). One case |
+| A sparse bundle does not shrink when files inside are deleted | `du -sh` on the `.sparsebundle` read 778M after a 192 MB leftover device set was deleted inside. The band cause and the effect of a compact are not tested |
 
 The two location keys and the simulator claims were verified by running
 `xcodebuild`, `simctl` and a simulator boot, except `-importPlatform` (not run)
 and the removable-volume cause of the `EPERM`, which is narrowed by elimination
-rather than observed, because no grant could be made. What is still unverified here was
+rather than observed, because no grant could be made, and the LaunchAgent
+refusal, whose mechanism is likewise not identified. What is still unverified here was
 not verified against a running Xcode.app, Logic Pro or MainStage window: the
 settings window was not opened, so that it stores the same keys is not observed,
 and neither Logic Pro nor MainStage is installed. Where that mattered, the claim

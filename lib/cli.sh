@@ -15,6 +15,8 @@ usage:
   extdisk-apfs hosts  [--all] [<volume>]
   extdisk-apfs host   <volume> [--only <id,id>] [--dry-run]
   extdisk-apfs unhost <volume> [--dry-run]
+  extdisk-apfs simdisk <volume> [--size <size>] [--dry-run]
+  extdisk-apfs simdisk <volume> --undo [--dry-run]
   extdisk-apfs explain <id> [<volume>]
   extdisk-apfs validate
   extdisk-apfs --version
@@ -30,6 +32,12 @@ commands:
                   command or an environment variable can persist. Prints the
                   ones only you can set. Moves no data.
   unhost          Remove what host wrote, and leave every file in place.
+  simdisk         Keep simulator devices on the volume, in a sparse bundle
+                  disk image, because CoreSimulatorService refuses a device
+                  set on a removable volume itself. Mounts the image at the
+                  default device set and adds a line to your shell startup
+                  file that attaches it in each new shell. --undo reverses
+                  that and keeps the image.
   explain         Show one catalogue entry: the mechanism, the exact setting,
                   the source it came from, and what to know before using it.
   validate        Check every row of the catalogue, and fail on a bad one.
@@ -39,6 +47,14 @@ host options:
   --only <id,id>  Restrict to these catalogue ids. Default is everything
                   installed.
   --dry-run       Print every command and every line, write nothing.
+
+simdisk options:
+  --size <size>   The image's ceiling, such as 60g or 500m. Default 60g. The
+                  image grows on demand, so this is not allocated up front.
+                  Applies only when the image is created.
+  --undo          Remove the startup line and eject the image. The image
+                  file stays.
+  --dry-run       Print every command, run none.
 
 erase options:
   --label <name>        Volume name. Required, because diskutil requires one.
@@ -69,6 +85,7 @@ examples:
   extdisk-apfs explain homebrew-cache /Volumes/Scratch
   extdisk-apfs host /Volumes/Scratch --dry-run
   extdisk-apfs host /Volumes/Scratch --only homebrew-cache,npm-cache
+  extdisk-apfs simdisk /Volumes/Scratch --size 100g --dry-run
 
 The tool refuses any target that is internal, virtual, read-only, a partition
 rather than a whole disk, or part of the boot disk's storage.
@@ -159,4 +176,31 @@ cmd_unhost() {
   done
   guard_volume "$volume"
   unhost_volume "$volume"
+}
+
+cmd_simdisk() {
+  local volume="${1:-}" size='60g' undo=0
+  shift || true
+  case "$volume" in
+    '' | -*) die "simdisk needs a volume, such as /Volumes/Scratch" ;;
+  esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --size)
+        [ $# -ge 2 ] || die "--size needs a value, such as 60g"
+        size="$2"
+        shift 2
+        ;;
+      --size=*) size="${1#--size=}"; shift ;;
+      --undo) undo=1; shift ;;
+      --dry-run) dry_run_on; shift ;;
+      *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
+    esac
+  done
+  simdisk_size_ok "$size" || die "--size '$size' is not a number and a unit, such as 60g, 500m or 1t"
+  if [ "$undo" = "1" ]; then
+    simdisk_down "$volume"
+  else
+    simdisk_up "$volume" "$size"
+  fi
 }

@@ -12,7 +12,7 @@ cd "$ROOT" || exit 1
 
 # Every shell file in the repository. The lib list is a glob rather than names,
 # so a new module is linted the moment it exists.
-SHELL_FILES=(bin/extdisk-apfs tests/run scripts/check)
+SHELL_FILES=(bin/extdisk-apfs tests/run tests/run-simdisk tests/helpers.sh scripts/check)
 for _lib in lib/*.sh; do
   SHELL_FILES+=("$_lib")
 done
@@ -66,7 +66,7 @@ check_syntax() {
 check_exec() {
   step 'file modes'
   local rc=0 file
-  for file in bin/extdisk-apfs tests/run scripts/check; do
+  for file in bin/extdisk-apfs tests/run tests/run-simdisk scripts/check; do
     if [ -x "$file" ]; then
       printf '  executable     %s\n' "$file"
     else
@@ -107,11 +107,13 @@ check_actions() {
 }
 
 check_tests() {
-  step 'tests/run'
-  if ! /bin/bash tests/run; then
-    note_failure tests
-    return 1
-  fi
+  local rc=0 file
+  for file in tests/run tests/run-simdisk; do
+    step "$file"
+    /bin/bash "$file" || rc=1
+  done
+  [ "$rc" -eq 0 ] || note_failure tests
+  return "$rc"
 }
 
 case "${1:-all}" in

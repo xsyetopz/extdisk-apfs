@@ -29,7 +29,7 @@ done
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 LIB="${EXTDISK_LIB:-$ROOT/lib}"
 
-for unit in ui diskinfo guard inspect erase verify hosts adopt cli; do
+for unit in ui diskinfo guard inspect erase verify hosts envblock adopt simhook simdisk cli; do
   [ -r "$LIB/$unit.sh" ] || {
     printf 'error: cannot read %s/%s.sh; set EXTDISK_LIB to the lib directory\n' "$LIB" "$unit" >&2
     exit 1
@@ -64,6 +64,10 @@ case "${1:-}" in
   unhost)
     shift
     cmd_unhost "$@"
+    ;;
+  simdisk)
+    shift
+    cmd_simdisk "$@"
     ;;
   explain)
     [ -n "${2:-}" ] || die "explain needs a catalogue id; run 'extdisk-apfs hosts --all' for the ids"

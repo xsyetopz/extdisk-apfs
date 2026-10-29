@@ -54,6 +54,9 @@ extdisk-apfs hosts /Volumes/Scratch        # what can keep data there
 extdisk-apfs explain cargo-home            # one entry, with its source
 extdisk-apfs host /Volumes/Scratch         # apply what can be persisted
 extdisk-apfs unhost /Volumes/Scratch       # undo exactly that
+extdisk-apfs simdisk /Volumes/Scratch --dry-run   # simulator devices, in an image
+extdisk-apfs simdisk /Volumes/Scratch --size 60g  # the ceiling of the image
+extdisk-apfs simdisk /Volumes/Scratch --undo      # keeps the image
 ```
 
 `list` output on the machine this was written on:
@@ -134,7 +137,7 @@ $ extdisk-apfs hosts /Volumes/Scratch
 `HOW` is the mechanism, and it decides what `host` can do:
 
 | Mechanism | `extdisk-apfs host` |
-|---|---|
+| --- | --- |
 | `cli` | Runs the tool's own command, such as `npm config set cache=PATH`. `unhost` runs the documented undo. |
 | `env` | Writes the variable into a marked block in `~/.zshenv`, or `~/.bash_profile` under bash. `unhost` removes the block. |
 | `flag` | Prints it. A per-invocation flag such as `xcodebuild -derivedDataPath` has nothing to persist. |
@@ -146,11 +149,54 @@ $ extdisk-apfs hosts /Volumes/Scratch
 deletes nothing: a cache refills itself, and a sample library is yours to drag
 by the vendor's own procedure. `unhost` undoes only what `host` wrote, and only
 where the setting still points at that volume; the directories and their
-contents stay.
+contents stay. It does not touch the `simulator <volume>` block that `simdisk`
+writes; `simdisk <volume> --undo` removes that one.
 
 `extdisk-apfs explain <id>` shows one entry with its source and its
 requirements. [docs/hosts.md](docs/hosts.md) describes the file format, how to
 add an entry, and the gaps where no vendor page could be read.
+
+### The Simulator
+
+`CoreSimulatorService` refuses to create a simulator device in a device set on a
+removable volume (`EPERM`), and no permission can be granted, so the catalogue
+lists the simulator device set as not hostable by a directory. A disk image on
+the same volume is not refused. `simdisk` creates a sparse bundle there
+(`--size` is its ceiling, default `60g`, and it grows on demand) and mounts it
+directly at `~/Library/Developer/CoreSimulator/Devices`, which Xcode reads
+(`xcrun xctrace list devices` lists the image's simulators). Nothing is moved,
+copied or linked: the directory that was there is shadowed while the image is
+mounted, its devices are invisible meanwhile, and they are back after the image
+is ejected. Before it creates or attaches anything it reads the state of that
+path, one of five: `ours` (the image is attached there, so it skips), `free`
+(it proceeds), and three it refuses, `link` (a symlink cannot be a mount point),
+`foreign` (another volume is mounted there, and a second mount would hide it)
+and `elsewhere` (the image is attached at another point, and `diskutil` ignores
+`--mountPoint` for an attached image). A line in your shell startup file, in a
+block keyed `simulator <volume>`, attaches the image in each new shell and is
+silent when the drive is absent. The line only runs when a shell starts, so
+Xcode launched from the Dock before any shell has run uses the device set on
+the internal disk. A LaunchAgent that was tried could not attach the image or
+read the volume (`Operation not permitted`) while it could attach a boot-volume
+image; that is consistent with the removable-volume restriction, no grant was
+tried, and the mechanism is not identified. Quit Xcode before the first mount;
+whether a running Xcode keeps the old directory is untested. Running `simdisk`
+twice changes nothing the second time, and makes no second backup of the startup
+file: measured, the backup count stayed at 2. `--undo` removes the line and
+ejects the image, refuses while a simulator is booted
+([why](docs/simulator-startup-line.md#a-booted-simulator-stops-the-eject)), works with the drive unplugged, and leaves the image file,
+because removing it destroys the devices inside. Run it before unplugging the
+drive: while the image is attached the drive itself will not eject, and macOS
+reports a half-finished eject as `Disk Not Ejected Properly`
+([measured](docs/simulator-startup-line.md#eject-the-image-before-unplugging-the-drive)). `unhost` leaves the
+`simulator <volume>` block alone; only `simdisk --undo` removes it. If an attach
+fails, a newly created image and device set directory stay; a re-run is
+idempotent and `--undo` removes neither
+([where to find them](docs/simulator-startup-line.md#what-a-failed-run-leaves)).
+[docs/simulator-storage.md](docs/simulator-storage.md) has the refusal,
+[docs/simulator-disk-image.md](docs/simulator-disk-image.md) the image, and
+[docs/simulator-startup-line.md](docs/simulator-startup-line.md) the startup line
+and its measurements.
 
 ## Which Targets Are Refused
 
@@ -240,87 +286,9 @@ this re-check.
 
 ## Development
 
-```bash
-scripts/check              # everything below, in order
-scripts/check lint         # shellcheck
-scripts/check syntax       # bash 3.2 parse check
-scripts/check exec         # file modes
-scripts/check actions      # actionlint over .github/workflows
-scripts/check tests        # tests/run
-```
-
-`scripts/check` is what CI runs, so a green run locally is a green run there.
-The checks are:
-
-- **`shellcheck`** over every shell file, including `tests/run` and
-  `scripts/check` themselves. The settings live in `.shellcheckrc`, so an
-  editor plugin reports the same findings: `shell=bash` because the library
-  files have no shebang and would otherwise be read as POSIX `sh`,
-  `external-sources` and `source-path=SCRIPTDIR` so the `.` lines are followed,
-  and four optional checks. `check-extra-masked-returns` is deliberately off:
-  it fired 98 times, every one on `dk_get`, which reports an unknown value as
-  empty output and exits zero by design.
-- **`bash -n`** with `/bin/bash` specifically, which is bash 3.2.57. The tool
-  has to run under the bash that macOS ships, not under a newer one from
-  Homebrew.
-- **File modes.** `bin/extdisk-apfs`, `tests/run` and `scripts/check`
-  executable; every `lib/*.sh` not executable, because they are sourced and
-  have no shebang.
-- **`actionlint`**, which also runs `shellcheck` over each `run:` block in the
-  workflow.
-- **`tests/run`**, every check that needs no external disk. It reports the
-  counts it ran, and one check is skipped unless you opt in below.
-
-Install the two linters with `brew install shellcheck actionlint`.
-
-Each test asserts on an exit status or a returned value, never on the wording
-of a message. The hardware facts are read from whichever disk holds the running
-system rather than from a hardcoded `disk0`, so the suite also passes on a VM
-or a CI runner. The destructive path is covered by the refusals and by a dry
-run; to include the accepting side of `guard_target`, name a real external disk:
-
-```bash
-EXTDISK_TEST_DISK=disk4 EXTDISK_TEST_VOLUME=/Volumes/Scratch tests/run
-```
-
-`EXTDISK_TEST_DISK` adds five checks and still writes nothing: it dry-runs an
-erase of that disk, with and without the post-format steps, refuses the same
-erase with no `--label`, and asserts that `guard_unchanged` accepts a matching
-fingerprint and refuses a changed one.
-
-`EXTDISK_TEST_VOLUME` adds seven more: the accepting side of `guard_volume`,
-and `hosts`, `host`, `unhost` and `explain` against a real mount point. Every
-one is a dry run, `EXTDISK_ENV_FILE` is pointed into the temporary directory,
-and the last check asserts that no directory appeared on the volume.
-
-A dry run is also how to test a change by hand:
-
-```bash
-./bin/extdisk-apfs erase diskN --label Test --dry-run
-```
-
-It exercises the full path, including every guard and the post-confirmation
-re-check, without writing anything. In a dry run the post-format commands print
-a placeholder instead of a mount point, because the volume does not exist yet
-and naming a path that belongs to another volume would be misleading.
-
-The code is split by concern:
-
-| File | Concern |
-| --- | --- |
-| `bin/extdisk-apfs` | Loading the modules and dispatching one command |
-| `lib/cli.sh` | The usage text and each command's options |
-| `lib/diskinfo.sh` | Facts, read from `diskutil`'s plists |
-| `lib/guard.sh` | The refusals, and nothing else |
-| `lib/inspect.sh` | Listing candidates and showing a layout |
-| `lib/erase.sh` | The destructive step and the post-format settings |
-| `lib/verify.sh` | The report after a format |
-| `lib/hosts.sh` | Reading the host catalogue and reporting it |
-| `lib/adopt.sh` | Writing the settings that point an app at the volume |
-| `lib/ui.sh` | Output, shell quoting, the confirmation prompt |
-| `data/hosts.tsv` | The catalogue: one application per line, with its source |
-| `tests/run` | The checks that need no external disk |
-| `scripts/check` | Every check, for a shell and for CI |
+Run `scripts/check` before a change; CI runs the same script. The checks, the
+opt-in hardware tests and the table of which file holds which concern are in
+[docs/development.md](docs/development.md).
 
 ## License
 

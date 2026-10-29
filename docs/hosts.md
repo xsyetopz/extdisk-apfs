@@ -21,7 +21,7 @@ extdisk-apfs unhost /Volumes/X         # undo exactly that
 | Mechanism | What happens |
 | --- | --- |
 | `cli` | The tool's own command runs, such as `npm config set cache=PATH`. Persistent, and `unhost` runs the documented undo. |
-| `env` | The variable goes into a marked block in your shell startup file. `unhost` removes the block. |
+| `env` | The variable goes into a marked block in your shell startup file. `unhost` removes the block, and only that one: not the `simdisk` block. |
 | `flag` | Printed. A per-invocation flag such as `xcodebuild -derivedDataPath` has nothing to persist. |
 | `file` | Printed. The key belongs in a config file whose format this tool will not rewrite for you. |
 | `ui` | Printed. The setting lives in a graphical application, so the steps are yours to follow. |
@@ -51,7 +51,9 @@ export CARGO_HOME="/Volumes/X/cargo-home"
 The file is copied to `<file>.extdisk-backup.<timestamp>` before the first
 change. Writing twice replaces the block rather than adding a second one, a
 second volume gets its own block, and `unhost` removes one block by its
-markers and leaves every other line alone. A new shell picks the variables up;
+markers and leaves every other line alone, including the `simulator <volume>`
+block that `extdisk-apfs simdisk` writes under its own key: only
+`simdisk <volume> --undo` removes that one. A new shell picks the variables up;
 the one you ran the command in does not.
 
 Set `EXTDISK_ENV_FILE` to write somewhere else, which is what the tests do.
@@ -146,7 +148,9 @@ Two honest gaps:
   so `pnpm-store` stays a `file` entry rather than becoming a `cli` one.
 
 [docs/external-storage.md](external-storage.md),
-[docs/simulator-storage.md](simulator-storage.md) and
+[docs/simulator-storage.md](simulator-storage.md) (with
+[docs/simulator-disk-image.md](simulator-disk-image.md) and
+[docs/simulator-startup-line.md](simulator-startup-line.md)) and
 [docs/audio-storage.md](audio-storage.md) are the long-form evidence for the
 Xcode, simulator, Spotlight, Time Machine and Audio Unit claims, including what
 could not be checked on this machine and why. The claims table is in the first.

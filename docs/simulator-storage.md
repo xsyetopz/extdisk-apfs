@@ -15,7 +15,9 @@ command succeeds on any path on the boot volume and the same user copies the
 same content onto the external volume without trouble. That leaves the daemon's
 access to a removable volume as the only explanation standing, though no grant
 could be made to confirm it, because the daemon is absent from the Files and
-Folders pane.
+Folders pane. A disk image on the volume is the exception: it is not refused,
+and [`extdisk-apfs simdisk`](simulator-disk-image.md) hosts the device data
+that way.
 
 ## Device Sets Take a Path
 
@@ -93,6 +95,17 @@ so there is nothing to switch on. Adding the daemon by hand under Full Disk
 Access, at
 `/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/com.apple.CoreSimulator.CoreSimulatorService.xpc`,
 is the remaining untried route.
+
+A second measurement is consistent with that, and does not settle it. A
+LaunchAgent on macOS 27.2 attached a disk image on the boot volume (exit 0) but
+not one on the external volume (`Operation not permitted`, exit 1), and a plain
+read of a file on the external volume from that agent failed too. An interactive
+shell does both, and that shell does not have Full Disk Access: reading
+`~/Library/Application Support/com.apple.TCC/TCC.db`, which needs it, failed.
+That is one run of one agent with no grant attempted, so it fits the
+removable-volume restriction without identifying the mechanism, and whether
+`CoreSimulatorService` meets the same refusal is not shown. The details are in
+[simulator-startup-line.md](simulator-startup-line.md#why-not-a-launchagent).
 
 The daemon is not sandbox-restricted in a way that explains this either:
 `codesign -d --entitlements -` on that bundle reports only

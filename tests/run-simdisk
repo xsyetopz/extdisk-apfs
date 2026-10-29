@@ -1,0 +1,316 @@
+#!/bin/bash
+# tests/run-simdisk - the simdisk and shell startup line checks that need no hardware.
+# The dry runs against a real volume are in tests/run.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=helpers.sh
+. "$ROOT/tests/helpers.sh"
+# shellcheck source=../lib/ui.sh
+. "$ROOT/lib/ui.sh"
+# shellcheck source=../lib/guard.sh
+. "$ROOT/lib/guard.sh"
+# shellcheck source=../lib/envblock.sh
+. "$ROOT/lib/envblock.sh"
+# shellcheck source=../lib/adopt.sh
+. "$ROOT/lib/adopt.sh"
+# shellcheck source=../lib/simhook.sh
+. "$ROOT/lib/simhook.sh"
+# shellcheck source=../lib/simdisk.sh
+. "$ROOT/lib/simdisk.sh"
+
+printf '\nthe simdisk command\n'
+exits_nonzero 'simdisk with no volume' "$BIN" simdisk
+exits_nonzero 'simdisk --undo with no volume' "$BIN" simdisk --undo
+exits_nonzero 'simdisk on a relative path' "$BIN" simdisk relative/path --dry-run
+exits_nonzero 'simdisk on the boot volume' "$BIN" simdisk / --dry-run
+exits_nonzero 'simdisk --undo on the boot volume' "$BIN" simdisk / --undo --dry-run
+exits_nonzero 'simdisk on a missing path' "$BIN" simdisk /no/such/volume --dry-run
+exits_nonzero 'simdisk with an unknown option' "$BIN" simdisk / --nope
+exits_nonzero 'simdisk --size with no value' "$BIN" simdisk / --size
+exits_nonzero 'simdisk --size with no unit' "$BIN" simdisk / --size 60 --dry-run
+
+printf '\nsimdisk_size_ok\n'
+for good in 60g 500m 1t 10K; do
+  if simdisk_size_ok "$good"; then pass "size '$good' is accepted"; else fail "size '$good' is accepted"; fi
+done
+for bad in '' g 0g 60 60x -1g '6 0g' '60g;id'; do
+  if simdisk_size_ok "$bad"; then fail "size '$bad' is refused" 'simdisk_size_ok accepted it'; else pass "size '$bad' is refused"; fi
+done
+
+printf '\nthe shell startup line\n'
+SET="$TMP/home/Library/Developer/CoreSimulator/Devices"
+equals 'the key is the word simulator and the volume' 'simulator /Volumes/X' "$(simhook_key /Volumes/X)"
+# The drive is absent: the line must be silent, exit 0 and create nothing.
+simhook_line "$TMP/no-such.sparsebundle" "$SET" >"$TMP/line.sh"
+exits_zero 'the line exits 0 under /bin/sh when the image is absent' /bin/sh "$TMP/line.sh"
+equals 'the line prints nothing when the image is absent' '' "$(/bin/sh "$TMP/line.sh" 2>&1)"
+if [ ! -e "$SET" ]; then
+  pass 'the line creates nothing when the image is absent'
+else
+  fail 'the line creates nothing when the image is absent' "$SET exists"
+fi
+
+# A path with a space, a backtick, a $(...) and a $VAR, in the image and in the
+# set. The image is a real directory, so [ -d ] succeeds and the later words
+# really run. Each marker is a relative name made in the working directory of
+# the run, which is $TMP/cwd, so a command that ran would leave a file there.
+# shellcheck disable=SC2016  # not expanding is the point: these are paths
+HOSTILE_IMG="$TMP/a b \$PROBE_VAR \`touch MARK_BT\` \$(touch MARK_SUB).img"
+# shellcheck disable=SC2016
+HOSTILE_SET="$TMP/set b \$PROBE_VAR \`touch MARK_SET_BT\` \$(touch MARK_SET_SUB)"
+mkdir -p "$HOSTILE_IMG" "$TMP/cwd"
+# Every run below starts here, so a command that did run leaves its file here
+# and not in the repository.
+cd "$TMP/cwd" || exit 1
+export PROBE_VAR=leaked
+# A stand-in for diskutil that records its arguments, so the real diskutil is
+# never reached and nothing is attached. Only the path of that one word in the
+# line is replaced; the quoting of both paths is what is under test.
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >%s\n' "$(shell_quote "$TMP/argv.out")" >"$TMP/diskutil-stub"
+chmod +x "$TMP/diskutil-stub"
+no_marker() { # <description>
+  if [ -z "$(find "$TMP/cwd" -mindepth 1 -maxdepth 1)" ]; then
+    pass "$1"
+  else
+    fail "$1" "created: $(find "$TMP/cwd" -mindepth 1 -maxdepth 1 | tr '\n' ' ')"
+  fi
+}
+run_line() { # <shell> <script>
+  rm -f "$TMP/argv.out"
+  (cd "$TMP/cwd" && "$1" "$2") >/dev/null 2>&1
+}
+
+# The set is a path that is in mount output, so the grep test short-circuits
+# before diskutil. The real line runs: real [ -d ], real mount, real grep.
+if /sbin/mount | /usr/bin/grep -qF ' on / ('; then
+  simhook_line "$HOSTILE_IMG" / >"$TMP/short.sh"
+  exits_zero 'a hostile image path parses under sh -n' /bin/sh -n "$TMP/short.sh"
+  exits_zero 'a hostile image path exits 0 under /bin/sh' /bin/sh "$TMP/short.sh"
+  exits_zero 'a hostile image path exits 0 under /bin/zsh' /bin/zsh "$TMP/short.sh"
+  (cd "$TMP/cwd" && /bin/sh "$TMP/short.sh") >/dev/null 2>&1
+  no_marker 'a hostile image path runs no command'
+  # The same line with the stand-in: a mounted set path must stop the attach.
+  line="$(simhook_line "$HOSTILE_IMG" /)"
+  printf '%s\n' "${line//\/usr\/sbin\/diskutil/$(shell_quote "$TMP/diskutil-stub")}" >"$TMP/short-stub.sh"
+  run_line /bin/sh "$TMP/short-stub.sh"
+  if [ ! -e "$TMP/argv.out" ]; then
+    pass 'a set path that is mounted stops the attach'
+  else
+    fail 'a set path that is mounted stops the attach' 'diskutil was reached'
+  fi
+else
+  skip 'a hostile image path with a mounted set' 'mount shows nothing on /'
+fi
+
+# The set is not mounted, so the line reaches diskutil: the stand-in must receive
+# both hostile paths as one argument each, uninterpreted.
+line="$(simhook_line "$HOSTILE_IMG" "$HOSTILE_SET")"
+printf '%s\n' "${line//\/usr\/sbin\/diskutil/$(shell_quote "$TMP/diskutil-stub")}" >"$TMP/hostile.sh"
+exits_zero 'a line with two hostile paths parses under sh -n' /bin/sh -n "$TMP/hostile.sh"
+for sh in /bin/sh /bin/zsh; do
+  run_line "$sh" "$TMP/hostile.sh"
+  equals "the set path reaches diskutil as one argument under $sh" "$HOSTILE_SET" "$(sed -n 4p "$TMP/argv.out" 2>/dev/null)"
+  equals "the image path reaches diskutil as one argument under $sh" "$HOSTILE_IMG" "$(sed -n 5p "$TMP/argv.out" 2>/dev/null)"
+  equals "diskutil receives five arguments under $sh" 5 "$(grep -c '' "$TMP/argv.out" 2>/dev/null)"
+  if grep -q leaked "$TMP/argv.out" 2>/dev/null; then
+    fail "a variable in a path stays unexpanded under $sh" 'the value reached the arguments'
+  else
+    pass "a variable in a path stays unexpanded under $sh"
+  fi
+  no_marker "a hostile set path runs no command under $sh"
+done
+unset PROBE_VAR
+
+ENVF_S="$TMP/zshenv-sim"
+printf 'export EDITOR=vi\nalias ll=ls\n' >"$ENVF_S"
+cp "$ENVF_S" "$TMP/zshenv-sim.orig"
+(EXTDISK_ENV_FILE="$ENVF_S" simhook_install /Volumes/Probe "$TMP/x.sparsebundle" "$SET") >/dev/null 2>&1
+equals 'install writes one simulator block' 1 "$(grep -c '^# >>> extdisk-apfs simulator /Volumes/Probe >>>$' "$ENVF_S")"
+(EXTDISK_ENV_FILE="$ENVF_S" simhook_remove /Volumes/Probe) >/dev/null 2>&1
+if cmp -s "$ENVF_S" "$TMP/zshenv-sim.orig"; then
+  pass 'install then remove leaves the file byte for byte'
+else
+  fail 'install then remove leaves the file byte for byte' 'the file differs'
+fi
+
+# The two keys for one volume are independent.
+ENVF_K="$TMP/zshenv-both"
+: >"$ENVF_K"
+(EXTDISK_ENV_FILE="$ENVF_K" env_block_write /Volumes/Probe 'A_VAR="/Volumes/Probe/a"') >/dev/null 2>&1
+(EXTDISK_ENV_FILE="$ENVF_K" simhook_install /Volumes/Probe "$TMP/x.sparsebundle" "$SET") >/dev/null 2>&1
+equals 'install leaves the host block in place' 1 "$(grep -c '^export A_VAR=' "$ENVF_K")"
+equals 'both blocks are there' 2 "$(grep -c '^# >>> extdisk-apfs ' "$ENVF_K")"
+(EXTDISK_ENV_FILE="$ENVF_K" env_block_write /Volumes/Probe 'A_VAR="/Volumes/Probe/b"') >/dev/null 2>&1
+equals 'rewriting the host block leaves the simulator block' 1 "$(grep -c 'diskutil image attach' "$ENVF_K")"
+(EXTDISK_ENV_FILE="$ENVF_K" simhook_remove /Volumes/Probe) >/dev/null 2>&1
+equals 'remove leaves the host block in place' 1 "$(grep -c '^export A_VAR="/Volumes/Probe/b"$' "$ENVF_K")"
+equals 'remove takes the simulator block out' 0 "$(grep -c 'diskutil image attach' "$ENVF_K")"
+
+cp "$ENVF_K" "$TMP/zshenv-both.orig"
+export EXTDISK_ENV_FILE="$ENVF_K"
+exits_zero 'remove with no block exits 0' simhook_remove /Volumes/Probe
+if cmp -s "$ENVF_K" "$TMP/zshenv-both.orig"; then
+  pass 'remove with no block changes nothing'
+else
+  fail 'remove with no block changes nothing' 'the file differs'
+fi
+export EXTDISK_ENV_FILE="$TMP/absent-zshenv"
+exits_zero 'remove with no file exits 0' simhook_remove /Volumes/Probe
+unset EXTDISK_ENV_FILE
+
+printf '\nthe device set path\n'
+# HOME is a scratch directory, so nothing on this machine is read or changed.
+export HOME="$TMP/home"
+DEVSET="$(simdisk_devices)"
+equals 'the set path is under HOME' "$TMP/home/Library/Developer/CoreSimulator/Devices" "$DEVSET"
+equals 'an absent path is free' free "$(simdisk_set_state "$TMP/x.sparsebundle")"
+exits_zero 'an absent path passes the check' simdisk_set_check "$TMP/x.sparsebundle"
+mkdir -p "$DEVSET"
+equals 'a plain directory is free' free "$(simdisk_set_state "$TMP/x.sparsebundle")"
+exits_zero 'a plain directory passes the check' simdisk_set_check "$TMP/x.sparsebundle"
+rmdir "$DEVSET"
+ln -s "$TMP/elsewhere" "$DEVSET"
+equals 'a symlink is reported as a link' link "$(simdisk_set_state "$TMP/x.sparsebundle")"
+# exits_nonzero runs the command in a subshell, so die cannot end the suite.
+exits_nonzero 'a symlink is refused' simdisk_set_check "$TMP/x.sparsebundle"
+rm "$DEVSET"
+
+printf '\nthe states that need an attached image\n'
+# A stand-in hdiutil, first on PATH for this section only, prints an hdiutil
+# info block that names the image at a mount point the test chooses. Nothing is
+# attached. The block is the real format: a rule line, image-path, and a
+# tab-separated device line whose third field is the mount point.
+STUBBIN="$TMP/stubbin"
+IMG="$TMP/x.sparsebundle"
+mkdir -p "$STUBBIN"
+# shellcheck disable=SC2016  # the script body expands in the stand-in, not here
+printf '#!/bin/sh\n[ "$1" = info ] && cat %s\nexit 0\n' "$(shell_quote "$TMP/hdiutil.out")" >"$STUBBIN/hdiutil"
+chmod +x "$STUBBIN/hdiutil"
+OLD_PATH="$PATH"
+export PATH="$STUBBIN:$PATH"
+hdiutil_says() { # <image> <mount point>
+  printf '%s\nimage-path      : %s\n/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_APFS_Volume\t%s\n' \
+    '================================================' "$1" "$2" >"$TMP/hdiutil.out"
+}
+
+hdiutil_says "$IMG" "$TMP/elsewhere-mp"
+equals 'an image attached at another point is elsewhere' elsewhere "$(simdisk_set_state "$IMG")"
+exits_nonzero 'an image attached at another point is refused' simdisk_set_check "$IMG"
+hdiutil_says "$IMG" "$DEVSET"
+equals 'an image attached at the set path is ours' ours "$(simdisk_set_state "$IMG")"
+exits_zero 'an image attached at the set path passes the check' simdisk_set_check "$IMG"
+hdiutil_says "$TMP/other.sparsebundle" "$DEVSET"
+equals 'another image at the set path does not make this one ours' free "$(simdisk_set_state "$IMG")"
+: >"$TMP/hdiutil.out"
+equals 'no attached image is free' free "$(simdisk_set_state "$IMG")"
+
+export PATH="$OLD_PATH"
+if [ "$(command -v hdiutil)" = /usr/bin/hdiutil ]; then
+  pass 'the stand-in hdiutil is off PATH again'
+else
+  fail 'the stand-in hdiutil is off PATH again' "hdiutil resolves to $(command -v hdiutil)"
+fi
+
+# Undo needs no mounted volume: a drive that is unplugged is when a user wants
+# the startup line gone. A dry run, with the scratch HOME and a scratch file.
+EXTDISK_ENV_FILE="$TMP/undo-zshenv" exits_zero 'undo on a volume that is not there' \
+  "$BIN" simdisk /Volumes/GoneDriveProbe --undo --dry-run
+
+printf '\na booted simulator stops the eject\n'
+# Ejecting a mount a booted simulator holds open is what macOS reports as a
+# drive not ejected properly: with one device booted, lsof counted 227 open
+# handles on the mount, and 0 after a shutdown. A stand-in xcrun gives the
+# listing, and the stand-in hdiutil above makes the set path read as ours.
+export PATH="$STUBBIN:$PATH"
+xcrun_says() { # <listing>
+  printf '%s' "$1" >"$TMP/xcrun.out"
+}
+# shellcheck disable=SC2016  # the script body expands in the stand-in, not here
+printf '#!/bin/sh\ncat %s\nexit 0\n' "$(shell_quote "$TMP/xcrun.out")" >"$STUBBIN/xcrun"
+chmod +x "$STUBBIN/xcrun"
+
+xcrun_says '== Devices ==
+-- iOS 27.2 --
+    iPhone 18 Pro (99CA95E9-6903-409C-9A89-2F853AF95EC6) (Booted)
+'
+equals 'a booted device is reported by its UDID' \
+  99CA95E9-6903-409C-9A89-2F853AF95EC6 "$(simdisk_booted)"
+xcrun_says '== Devices ==
+-- iOS 27.2 --
+'
+equals 'no booted device reports nothing' '' "$(simdisk_booted)"
+
+# Nothing booted and "could not ask" must be different answers. /usr/bin/xcrun
+# is a shim on practically every Mac, so a simctl that fails is the case that
+# happens, not a missing binary. The tool runs under set -euo pipefail, where a
+# non-zero status from this function in a bare assignment ends the script: that
+# is checked below through $BIN, which has set -e, because this file does not.
+printf '#!/bin/sh\nexit 72\n' >"$STUBBIN/xcrun"
+exits_nonzero 'a simctl that fails is not reported as nothing booted' simdisk_booted
+equals 'a simctl that fails reports no UDID' '' "$(simdisk_booted 2>/dev/null || true)"
+
+# End to end through $BIN, which is the only way to exercise set -e: a failing
+# simctl must warn and carry on, not end the run. The stand-in hdiutil makes the
+# set path read as ours, which is the only state the guard runs in, and $BIN
+# inherits the scratch HOME, so its device set path is the scratch one.
+hdiutil_says "/Volumes/FailStubProbe/$SIMDISK_IMAGE" "$DEVSET"
+printf 'export EDITOR=vi\n' >"$TMP/failstub-zshenv"
+EXTDISK_ENV_FILE="$TMP/failstub-zshenv" exits_zero 'a failing simctl warns and does not end undo' \
+  "$BIN" simdisk /Volumes/FailStubProbe --undo
+
+# shellcheck disable=SC2016  # the script body expands in the stand-in, not here
+printf '#!/bin/sh\ncat %s\nexit 0\n' "$(shell_quote "$TMP/xcrun.out")" >"$STUBBIN/xcrun"
+
+# The refusal has to come before the startup line is removed, so a refusal
+# cannot leave the line gone and the image still mounted. The file really holds
+# the block, so a refusal that came too late would change it. The volume is a
+# name nothing is mounted at, which is what undo has to work on anyway.
+BOOTED_VOL=/Volumes/BootedProbe
+BOOTED_ENVF="$TMP/booted-zshenv"
+booted_envf_write() {
+  {
+    printf 'export EDITOR=vi\n'
+    env_marker_start "$(simhook_key "$BOOTED_VOL")"
+    simhook_line "$BOOTED_VOL/$SIMDISK_IMAGE" "$DEVSET"
+    env_marker_end "$(simhook_key "$BOOTED_VOL")"
+  } >"$BOOTED_ENVF"
+}
+booted_envf_write
+cp "$BOOTED_ENVF" "$TMP/booted-zshenv.orig"
+hdiutil_says "$BOOTED_VOL/$SIMDISK_IMAGE" "$DEVSET"
+xcrun_says '== Devices ==
+-- iOS 27.2 --
+    iPhone 18 Pro (99CA95E9-6903-409C-9A89-2F853AF95EC6) (Booted)
+'
+EXTDISK_ENV_FILE="$BOOTED_ENVF" exits_nonzero 'undo is refused while a device is booted' \
+  simdisk_down "$BOOTED_VOL"
+if cmp -s "$BOOTED_ENVF" "$TMP/booted-zshenv.orig"; then
+  pass 'the refusal leaves the startup line in the file'
+else
+  fail 'the refusal leaves the startup line in the file' \
+    "$BOOTED_ENVF differs from the copy taken before the call"
+fi
+
+# The same call with nothing booted, so the booted listing is the only
+# difference: it goes through and the block is gone. A dry run would not write,
+# so this is a real one. The eject is a real diskutil call on a scratch path
+# that is not a mount, so it fails and simdisk_down warns, which is exit 0.
+xcrun_says '== Devices ==
+-- iOS 27.2 --
+'
+EXTDISK_ENV_FILE="$BOOTED_ENVF" exits_zero 'undo goes through with nothing booted' \
+  simdisk_down "$BOOTED_VOL"
+equals 'the startup line is gone from the file' '' \
+  "$(env_block_read "$BOOTED_ENVF" "$(simhook_key "$BOOTED_VOL")")"
+
+export PATH="$OLD_PATH"
+if [ "$(command -v xcrun)" = /usr/bin/xcrun ]; then
+  pass 'the stand-in xcrun is off PATH again'
+else
+  fail 'the stand-in xcrun is off PATH again' "xcrun resolves to $(command -v xcrun)"
+fi
+
+printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" -eq 0 ]
