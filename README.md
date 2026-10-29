@@ -47,7 +47,7 @@ extdisk-apfs verify disk4         # partition map, container, volume, capacity
 
 `list` output on the machine this was written on:
 
-```
+```text
 External physical disks
   IDENT    MEDIA NAME               SIZE       BUS    SSD    CONTENT
   disk4    SP PD60                  256.1 GB   USB    yes    GUID_partition_scheme
