@@ -1,0 +1,158 @@
+#!/bin/bash
+# extdisk-apfs - reclaim an external disk as one APFS volume on a GUID partition map.
+#
+# Every disk operation here is a documented diskutil verb. The tool adds the
+# identification and the refusals around them, because the destructive step
+# takes a disk identifier and identifiers are renumbered on every attach.
+#
+# Repository: https://github.com/USER/extdisk-apfs
+# License: MIT
+
+set -euo pipefail
+
+VERSION='1.0.0'
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LIB="${EXTDISK_LIB:-$ROOT/lib}"
+
+for unit in ui diskinfo inspect erase verify; do
+  [ -r "$LIB/$unit.sh" ] || {
+    printf 'error: cannot read %s/%s.sh; set EXTDISK_LIB to the lib directory\n' "$LIB" "$unit" >&2
+    exit 1
+  }
+  # shellcheck source=/dev/null
+  . "$LIB/$unit.sh"
+done
+
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+extdisk-apfs - reclaim an external disk as one APFS volume on GPT.
+
+usage:
+  extdisk-apfs list
+  extdisk-apfs show   <disk>
+  extdisk-apfs erase  <disk> --label <name> [options]
+  extdisk-apfs verify <disk>
+
+commands:
+  list            Show every external physical disk that may be erased.
+  show            Show one disk's current partition map and mounted volumes.
+  erase           Erase the disk and create one APFS volume. Destroys all data.
+  verify          Report the partition map, container, volume and capacity.
+
+erase options:
+  --label <name>        Volume name. Required, because diskutil requires one.
+  --case-sensitive      Use the case-sensitive APFS personality. Default is
+                        the plain APFS personality, which is case-insensitive.
+  --enable-owners       Run diskutil enableOwnership on the new volume, so
+                        that file owners on the volume are honoured.
+  --no-spotlight        Turn off Spotlight indexing for the new volume.
+  --no-timemachine      Add a Time Machine volume exclusion for the volume.
+  --dry-run             Print every command without running any of it.
+  --force               Skip the typed confirmation. For scripts only.
+
+examples:
+  extdisk-apfs list
+  extdisk-apfs show disk4
+  extdisk-apfs erase disk4 --label Scratch --enable-owners
+  extdisk-apfs erase disk4 --label Scratch --dry-run
+
+The tool refuses any target that is internal, virtual, read-only, a partition
+rather than a whole disk, or part of the boot disk's storage.
+EOF
+}
+
+cmd_erase() {
+  disk="${1:-}"
+  shift || true
+  [ -n "$disk" ] || die "erase needs a disk identifier; run 'extdisk-apfs list'"
+
+  label=''
+  personality='APFS'
+  force=0
+  want_owners=0
+  want_no_spotlight=0
+  want_no_tm=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --label)
+        label="${2:-}"
+        shift 2 || die "--label needs a value"
+        ;;
+      --label=*) label="${1#--label=}"; shift ;;
+      --case-sensitive) personality='Case-sensitive APFS'; shift ;;
+      --enable-owners) want_owners=1; shift ;;
+      --no-spotlight) want_no_spotlight=1; shift ;;
+      --no-timemachine) want_no_tm=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --force) force=1; shift ;;
+      *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
+    esac
+  done
+
+  guard_target "$disk"
+  guard_label "$label"
+
+  print_layout "$disk"
+
+  heading "What happens next"
+  say "  target:       $disk  $(dk_get "$disk" MediaName)  $(human_size "$(dk_get "$disk" TotalSize)")"
+  say "  partition map: GPT, replacing $(dk_get "$disk" Content)"
+  say "  file system:  $personality, one volume named '$label'"
+  say "  boot disk:    $(dk_boot_disk), untouched"
+  warn "every byte of data on $disk becomes unreachable"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    heading "Dry run, nothing is written"
+  elif [ "$force" = "1" ]; then
+    warn "--force given, skipping the typed confirmation"
+  else
+    confirm_identifier "$disk"
+  fi
+
+  do_erase "$disk" "$label" "$personality"
+
+  mount_point="/Volumes/$label"
+  if [ "$DRY_RUN" = "0" ] && [ ! -d "$mount_point" ]; then
+    warn "expected the new volume at $mount_point; the steps below may fail"
+  fi
+
+  # Printed in a dry run too, because the post-format steps are part of what
+  # the operator is deciding to run.
+  [ "$want_owners" = "0" ] || enable_owners "$mount_point"
+  [ "$want_no_spotlight" = "0" ] || disable_spotlight "$mount_point"
+  [ "$want_no_tm" = "0" ] || exclude_from_time_machine "$mount_point"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    say ''
+    dim "dry run finished; rerun without --dry-run to erase $disk"
+    return 0
+  fi
+
+  verify_disk "$disk"
+  say ''
+  ok "$disk is now GPT with one $personality volume '$label' at $mount_point"
+}
+
+case "${1:-}" in
+  list) print_candidates ;;
+  show)
+    [ -n "${2:-}" ] || die "show needs a disk identifier"
+    dk_exists "$2" || die "diskutil does not know '$2'"
+    print_layout "$2"
+    ;;
+  erase)
+    shift
+    cmd_erase "$@"
+    ;;
+  verify)
+    [ -n "${2:-}" ] || die "verify needs a disk identifier"
+    verify_disk "$2"
+    ;;
+  --version | -V) say "extdisk-apfs $VERSION" ;;
+  help | --help | -h | '') usage ;;
+  *) die "unknown command '$1'; run 'extdisk-apfs' for the usage" ;;
+esac
