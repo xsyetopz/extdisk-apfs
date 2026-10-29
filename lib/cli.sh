@@ -16,6 +16,8 @@ usage:
   extdisk-apfs host   <volume> [--only <id,id>] [--dry-run]
   extdisk-apfs unhost <volume> [--dry-run]
   extdisk-apfs explain <id> [<volume>]
+  extdisk-apfs validate
+  extdisk-apfs --version
 
 commands:
   list            Show every external physical disk, as candidates.
@@ -30,6 +32,8 @@ commands:
   unhost          Remove what host wrote, and leave every file in place.
   explain         Show one catalogue entry: the mechanism, the exact setting,
                   the source it came from, and what to know before using it.
+  validate        Check every row of the catalogue, and fail on a bad one.
+  --version       Print the version.
 
 host options:
   --only <id,id>  Restrict to these catalogue ids. Default is everything
@@ -71,31 +75,14 @@ rather than a whole disk, or part of the boot disk's storage.
 EOF
 }
 
-# post_format_steps <mount-point> [step...]
-# Each step is one of the tokens below, passed as its own argument.
-post_format_steps() {
-  local mp="$1" step
-  shift
-  for step in "$@"; do
-    case "$step" in
-      own) take_ownership "$mp" ;;
-      owners) enable_owners "$mp" ;;
-      spotlight) disable_spotlight "$mp" ;;
-      timemachine) exclude_from_time_machine "$mp" ;;
-    esac
-  done
-}
-
 cmd_erase() {
   local disk="${1:-}"
   shift || true
   [ -n "$disk" ] || die "erase needs a disk identifier; run 'extdisk-apfs list'"
 
   local label='' personality='APFS' force=0
-  local identity mount_point boot_disks
   # An array, so each step stays one argument. In bash 3.2 under set -u an
-  # empty array cannot be expanded bare, hence the ${steps[@]+...} guard at
-  # each use site.
+  # empty array cannot be expanded bare, hence the ${steps[@]+...} guard below.
   local steps=()
 
   while [ $# -gt 0 ]; do
@@ -111,70 +98,13 @@ cmd_erase() {
       --enable-owners) steps[${#steps[@]}]=owners; shift ;;
       --no-spotlight) steps[${#steps[@]}]=spotlight; shift ;;
       --no-timemachine) steps[${#steps[@]}]=timemachine; shift ;;
-      --dry-run) DRY_RUN=1; shift ;;
+      --dry-run) dry_run_on; shift ;;
       --force) force=1; shift ;;
       *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
     esac
   done
 
-  guard_target "$disk"
-  guard_label "$label"
-  identity="$(dk_identity "$disk")"
-  [ -n "$identity" ] || die "could not fingerprint $disk"
-
-  print_layout "$disk"
-
-  boot_disks="$(dk_boot_disks | tr '\n' ' ')"
-  heading "What happens next"
-  say "  target:        $disk  $(dk_get "$disk" MediaName)  $(human_size "$(dk_get "$disk" TotalSize)")"
-  say "  partition map: GPT, replacing $(dk_get "$disk" Content)"
-  say "  file system:   $personality, one volume named '$label'"
-  say "  boot disk:     ${boot_disks% }, untouched"
-  warn "every byte of data on $disk becomes unreachable"
-
-  if [ "$DRY_RUN" = "1" ]; then
-    heading "Dry run, nothing is written"
-  elif [ "$force" = "1" ]; then
-    warn "--force given, skipping the typed confirmation"
-  else
-    confirm_identifier "$disk"
-  fi
-
-  # Re-checked here rather than only above, because the prompt leaves a window
-  # in which the disk can be detached and another one can take the identifier.
-  guard_unchanged "$disk" "$identity"
-
-  do_erase "$disk" "$label" "$personality"
-
-  if [ "$DRY_RUN" = "1" ]; then
-    # No volume exists, so the real mount point is unknowable. A bare token
-    # keeps the printed commands from naming a path that may belong to another
-    # volume, such as /Volumes/Macintosh HD, which is a symlink to / on a
-    # stock system. The token has no shell metacharacters, so it prints as
-    # typed rather than escaped.
-    if [ "${#steps[@]}" -gt 0 ]; then
-      say ''
-      dim 'MOUNT_POINT below stands for the new volume, read from diskutil after the erase'
-    fi
-    post_format_steps MOUNT_POINT ${steps[@]+"${steps[@]}"}
-    say ''
-    dim "dry run finished; rerun without --dry-run to erase $disk"
-    return 0
-  fi
-
-  if mount_point="$(new_volume_mount_point "$disk")"; then
-    post_format_steps "$mount_point" ${steps[@]+"${steps[@]}"}
-    report_writability "$mount_point"
-  else
-    mount_point='(not mounted)'
-    if [ "${#steps[@]}" -gt 0 ]; then
-      warn "the new volume is not mounted, so the post-format steps were skipped"
-    fi
-  fi
-
-  verify_disk "$disk"
-  say ''
-  ok "$disk is now GPT with one $personality volume '$label' at $mount_point"
+  erase_flow "$disk" "$label" "$personality" "$force" ${steps[@]+"${steps[@]}"}
 }
 
 cmd_hosts() {
@@ -206,7 +136,7 @@ cmd_host() {
         shift 2
         ;;
       --only=*) only="${1#--only=}"; shift ;;
-      --dry-run) DRY_RUN=1; shift ;;
+      --dry-run) dry_run_on; shift ;;
       *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
     esac
   done
@@ -223,7 +153,7 @@ cmd_unhost() {
   [ -n "$volume" ] || die "unhost needs a volume, such as /Volumes/Scratch"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --dry-run) DRY_RUN=1; shift ;;
+      --dry-run) dry_run_on; shift ;;
       *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
     esac
   done

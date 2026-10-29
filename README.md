@@ -278,12 +278,18 @@ or a CI runner. The destructive path is covered by the refusals and by a dry
 run; to include the accepting side of `guard_target`, name a real external disk:
 
 ```bash
-EXTDISK_TEST_DISK=disk4 tests/run
+EXTDISK_TEST_DISK=disk4 EXTDISK_TEST_VOLUME=/Volumes/Scratch tests/run
 ```
 
-That adds three checks and still writes nothing: it dry-runs an erase of that
-disk and asserts that `guard_unchanged` accepts a matching fingerprint and
-refuses a changed one.
+`EXTDISK_TEST_DISK` adds five checks and still writes nothing: it dry-runs an
+erase of that disk, with and without the post-format steps, refuses the same
+erase with no `--label`, and asserts that `guard_unchanged` accepts a matching
+fingerprint and refuses a changed one.
+
+`EXTDISK_TEST_VOLUME` adds seven more: the accepting side of `guard_volume`,
+and `hosts`, `host`, `unhost` and `explain` against a real mount point. Every
+one is a dry run, `EXTDISK_ENV_FILE` is pointed into the temporary directory,
+and the last check asserts that no directory appeared on the volume.
 
 A dry run is also how to test a change by hand:
 

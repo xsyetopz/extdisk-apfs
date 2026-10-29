@@ -43,9 +43,16 @@ shell_quote() {
 }
 
 # The default lives here, next to the function that reads it, so that a module
-# sourced on its own by a test behaves as it does under bin/extdisk-apfs.
-# --dry-run sets it to 1.
-DRY_RUN="${DRY_RUN:-0}"
+# sourced on its own by a test behaves as it does under bin/extdisk-apfs. It is
+# set outright rather than defaulted, because an exported DRY_RUN in the
+# caller's environment must not silently turn a real erase into a dry run, or
+# the reverse. --dry-run is the only way in.
+DRY_RUN=0
+
+# dry_run_on
+# The one way in, so that the flag's state stays owned by the module that acts
+# on it, and no other file assigns it.
+dry_run_on() { DRY_RUN=1; }
 
 # run_cmd <command...>
 # Prints the command as a shell would need it typed, then runs it unless

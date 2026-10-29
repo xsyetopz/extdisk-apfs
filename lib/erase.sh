@@ -1,5 +1,90 @@
 # erase.sh - the destructive step and the optional post-format settings.
 
+# post_format_steps <mount-point> [step...]
+# Each step is one of the tokens below, passed as its own argument.
+post_format_steps() {
+  local mp="$1" step
+  shift
+  for step in "$@"; do
+    case "$step" in
+      own) take_ownership "$mp" ;;
+      owners) enable_owners "$mp" ;;
+      spotlight) disable_spotlight "$mp" ;;
+      timemachine) exclude_from_time_machine "$mp" ;;
+    esac
+  done
+}
+
+# erase_flow <whole-disk> <label> <personality> <force 0|1> [step...]
+# The whole destructive sequence: refuse, fingerprint, show, confirm, re-check,
+# erase, then the post-format steps and the report. lib/cli.sh parses the
+# options and calls this, so the order of the refusals is decided in one place
+# and does not depend on how the arguments were spelled.
+erase_flow() {
+  local disk="$1" label="$2" personality="$3" force="$4"
+  shift 4
+  local identity mount_point boot_disks
+
+  guard_target "$disk"
+  guard_label "$label"
+  identity="$(dk_identity "$disk")"
+  [ -n "$identity" ] || die "could not fingerprint $disk"
+
+  print_layout "$disk"
+
+  boot_disks="$(dk_boot_disks | tr '\n' ' ')"
+  heading "What happens next"
+  say "  target:        $disk  $(dk_get "$disk" MediaName)  $(human_size "$(dk_get "$disk" TotalSize)")"
+  say "  partition map: GPT, replacing $(dk_get "$disk" Content)"
+  say "  file system:   $personality, one volume named '$label'"
+  say "  boot disk:     ${boot_disks% }, untouched"
+  warn "every byte of data on $disk becomes unreachable"
+
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    heading "Dry run, nothing is written"
+  elif [ "$force" = "1" ]; then
+    warn "--force given, skipping the typed confirmation"
+  else
+    confirm_identifier "$disk"
+  fi
+
+  # Re-checked here rather than only above, because the prompt leaves a window
+  # in which the disk can be detached and another one can take the identifier.
+  guard_unchanged "$disk" "$identity"
+
+  do_erase "$disk" "$label" "$personality"
+
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    # No volume exists, so the real mount point is unknowable. A bare token
+    # keeps the printed commands from naming a path that may belong to another
+    # volume, such as /Volumes/Macintosh HD, which is a symlink to / on a
+    # stock system. The token has no shell metacharacters, so it prints as
+    # typed rather than escaped.
+    if [ "$#" -gt 0 ]; then
+      say ''
+      dim 'MOUNT_POINT below stands for the new volume, read from diskutil after the erase'
+    fi
+    post_format_steps MOUNT_POINT "$@"
+    say ''
+    dim "dry run finished; rerun without --dry-run to erase $disk"
+    return 0
+  fi
+
+  if mount_point="$(new_volume_mount_point "$disk")"; then
+    post_format_steps "$mount_point" "$@"
+    report_writability "$mount_point"
+  else
+    mount_point='(not mounted)'
+    if [ "$#" -gt 0 ]; then
+      warn "the new volume is not mounted, so the post-format steps were skipped"
+    fi
+  fi
+
+  verify_disk "$disk"
+  say ''
+  ok "$disk is now GPT with one $personality volume '$label' at $mount_point"
+}
+
 # do_erase <whole-disk> <label> <personality>
 # One normal erase: diskutil writes a fresh GUID partition map and formats one
 # APFS volume. This is a repartition, not an overwrite of every block, which is

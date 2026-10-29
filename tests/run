@@ -104,7 +104,10 @@ printf '\nerase refuses a bad invocation\n'
 exits_nonzero 'no identifier' "$BIN" erase
 exits_nonzero '--label without a value' "$BIN" erase "$BOOT_DISK" --label
 exits_nonzero 'an unknown option' "$BIN" erase "$BOOT_DISK" --nope
-exits_nonzero 'no label' "$BIN" erase "$BOOT_DISK" --dry-run
+# A missing --label cannot be tested through the boot disk, because guard_target
+# refuses the target before guard_label sees the label. The refusal itself is
+# covered by the empty label in the guard_label section, and end to end by the
+# EXTDISK_TEST_DISK section at the bottom.
 
 printf '\nerase refuses a bad target\n'
 for target in "$BOOT_DISK" "$BOOT_PART" "/dev/$BOOT_DISK" "$BOOT_DISK/../disk9" \
@@ -153,8 +156,11 @@ if [ -n "$BOOT_DISK" ]; then
 else
   fail 'the boot volume resolves to a whole disk' 'dk_boot_disks was empty'
 fi
-equals 'the root mount point is on the boot disk' "$(dk_boot_disks)" \
-  "$(dk_whole_disks_of /)"
+# Checked against diskutil's own internal physical list rather than against
+# dk_whole_disks_of, which dk_boot_disks is defined as. A resolution that
+# stopped at the synthesized container would not appear in that list.
+equals 'the boot disk is one diskutil calls internal and physical' "$BOOT_DISK" \
+  "$(dk_list_get WholeDisks internal physical | grep -x "$BOOT_DISK" || true)"
 equals 'the boot disk is a whole disk' 'true' "$(dk_get "$BOOT_DISK" WholeDisk)"
 if [ -n "$BOOT_PART" ]; then
   equals 'a partition resolves to its whole disk' "$BOOT_DISK" \
@@ -181,6 +187,15 @@ else
 fi
 equals 'dk_identity is stable across calls' \
   "$(dk_identity "$BOOT_DISK")" "$(dk_identity "$BOOT_DISK")"
+# Stability alone would hold for a constant. guard_unchanged compares one disk's
+# fingerprint with a later one, so two different devices must not share it.
+if [ -n "$BOOT_PART" ] && [ "$(dk_identity "$BOOT_DISK")" = "$(dk_identity "$BOOT_PART")" ]; then
+  fail 'dk_identity tells two devices apart' 'the disk and its partition share a fingerprint'
+elif [ -n "$BOOT_PART" ]; then
+  pass 'dk_identity tells two devices apart'
+else
+  skip 'dk_identity tells two devices apart' "$BOOT_DISK has no partitions"
+fi
 for d in $(dk_external_whole_disks); do
   equals "$d is listed as external" 'false' "$(dk_get "$d" Internal)"
 done
@@ -302,6 +317,17 @@ equals 'the template becomes four arguments' 4 "${#CLI_ARGV[@]}"
 equals 'the path stays in one argument' 'cache=/V/a b' "${CLI_ARGV[3]}"
 cli_argv 'tool set %s' '/V/x'
 equals 'a lone placeholder is its own argument' '/V/x' "${CLI_ARGV[2]}"
+# docs/hosts.md claims a path with a space, a dollar sign or a semicolon stays
+# one argument. A real command receives the list, so a shell reading any of
+# those characters would show up as a different or an extra argument.
+# shellcheck disable=SC2016  # the script body and the path must not expand here
+printf '#!/bin/bash\nfor a in "$@"; do printf "arg:%%s\\n" "$a"; done\n' >"$TMP/showargs"
+chmod +x "$TMP/showargs"
+# shellcheck disable=SC2016  # these characters are the input, not an expansion
+cli_argv "$TMP/showargs set %s" '/V/a b;$(id)`id`'
+equals 'the command receives the path as one argument, uninterpreted' \
+  "arg:set
+arg:/V/a b;\$(id)\`id\`" "$("${CLI_ARGV[@]}")"
 
 printf '\nthe environment block\n'
 ENVF="$TMP/zshenv"
@@ -318,8 +344,14 @@ env_block_strip "$ENVF" /Volumes/Probe
 equals 'stripping removes that block' 0 "$(grep -c 'extdisk-apfs /Volumes/Probe ' "$ENVF")"
 equals 'stripping leaves the other block' 1 "$(grep -c '^export B_VAR=' "$ENVF")"
 equals 'stripping leaves the unrelated line' 1 "$(grep -c '^export EDITOR=vi$' "$ENVF")"
-equals 'the backup keeps the original' 1 \
-  "$(cat "$ENVF".extdisk-backup.* 2>/dev/null | grep -c '^export EDITOR=vi$')"
+# Asserted as "some backup has the line", not as a count. The name carries a
+# timestamp in seconds, so three writes leave one backup or three depending on
+# where the second boundary falls, and a count would be flaky.
+if grep -qx 'export EDITOR=vi' "$ENVF".extdisk-backup.* 2>/dev/null; then
+  pass 'a backup keeps the original line'
+else
+  fail 'a backup keeps the original line' 'no backup file has it'
+fi
 
 # A volume name is user input, and the block is sourced by every new shell.
 # env_pair is the function host_volume builds its lines with, and a real shell
@@ -370,6 +402,13 @@ printf '\nguard_target against hardware\n'
 if [ -n "${EXTDISK_TEST_DISK:-}" ]; then
   exits_zero "$EXTDISK_TEST_DISK passes the refusals" \
     "$BIN" erase "$EXTDISK_TEST_DISK" --label TestLabel --dry-run
+  # The only target that reaches guard_label, because guard_target refuses
+  # every other disk this suite can name.
+  exits_nonzero "$EXTDISK_TEST_DISK with no label" \
+    "$BIN" erase "$EXTDISK_TEST_DISK" --dry-run
+  exits_zero "$EXTDISK_TEST_DISK with every post-format step" \
+    "$BIN" erase "$EXTDISK_TEST_DISK" --label TestLabel --dry-run \
+    --own --enable-owners --no-spotlight --no-timemachine
   if (guard_unchanged "$EXTDISK_TEST_DISK" deadbeef) >/dev/null 2>&1; then
     fail 'a changed fingerprint is refused' 'guard_unchanged accepted it'
   else
@@ -382,6 +421,33 @@ if [ -n "${EXTDISK_TEST_DISK:-}" ]; then
   fi
 else
   skip 'the accepting path' 'set EXTDISK_TEST_DISK to an external disk'
+fi
+
+printf '\nhost against hardware\n'
+# The accepting path of guard_volume, and the row loop that only a real
+# external volume reaches. Every call is a dry run, and EXTDISK_ENV_FILE points
+# into $TMP, so the volume and your startup file are not written to.
+if [ -n "${EXTDISK_TEST_VOLUME:-}" ]; then
+  export EXTDISK_ENV_FILE="$TMP/hardware-zshenv"
+  exits_zero "hosts $EXTDISK_TEST_VOLUME" "$BIN" hosts "$EXTDISK_TEST_VOLUME"
+  exits_zero "host $EXTDISK_TEST_VOLUME --dry-run" \
+    "$BIN" host "$EXTDISK_TEST_VOLUME" --dry-run
+  exits_zero 'host with --only one id' \
+    "$BIN" host "$EXTDISK_TEST_VOLUME" --only homebrew-cache --dry-run
+  exits_zero 'host with --only two ids' \
+    "$BIN" host "$EXTDISK_TEST_VOLUME" --only homebrew-cache,npm-cache --dry-run
+  exits_zero "unhost $EXTDISK_TEST_VOLUME --dry-run" \
+    "$BIN" unhost "$EXTDISK_TEST_VOLUME" --dry-run
+  exits_zero "explain with $EXTDISK_TEST_VOLUME" \
+    "$BIN" explain homebrew-cache "$EXTDISK_TEST_VOLUME"
+  if [ -e "$EXTDISK_TEST_VOLUME/homebrew-cache" ]; then
+    fail 'a dry run creates no directory' "$EXTDISK_TEST_VOLUME/homebrew-cache exists"
+  else
+    pass 'a dry run creates no directory'
+  fi
+  unset EXTDISK_ENV_FILE
+else
+  skip 'host against a volume' 'set EXTDISK_TEST_VOLUME to an external mount point'
 fi
 
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
