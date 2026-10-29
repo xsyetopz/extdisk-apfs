@@ -9,6 +9,11 @@ Every claim here was checked on one machine: macOS Darwin 27.2.0, Xcode 27.1
 in [How Each Claim Was Checked](#how-each-claim-was-checked). Replace
 `/Volumes/X` with your volume's mount point.
 
+This is the long-form evidence. The same mechanisms, plus the ones for
+applications that are not installed here, are in the catalogue the tool reads:
+`extdisk-apfs hosts /Volumes/X` lists them, `extdisk-apfs explain <id>` shows
+one with its source, and [docs/hosts.md](hosts.md) describes the file.
+
 ## Before Anything Else: You May Not Own the Volume
 
 `diskutil eraseDisk` leaves the volume's root directory owned by `root`. On the

@@ -44,6 +44,17 @@ verify_disk() {
       "$([ "$(dk_get "$vol" GlobalPermissionsEnabled)" = "true" ] && echo enabled || echo disabled)"
     printf '    free space:  %s\n' "$(human_size "$(dk_get "$vol" APFSContainerFree)")"
     if [ -n "$mp" ]; then
+      # Who owns the root directory and whether you can write there. A freshly
+      # erased volume is root-owned, so this is the question an operator asks
+      # of a volume next, and diskutil does not answer it.
+      printf '    owner:       %s\n' "$(stat -f '%Su:%Sg' "$mp")"
+      printf '    mode:        %s\n' "$(stat -f '%Sp' "$mp")"
+      if [ -w "$mp" ]; then
+        printf '    you:         %s can write\n' "$(id -un)"
+      else
+        printf '    you:         %s cannot write; run: sudo chown %s:%s %s\n' \
+          "$(id -un)" "$(id -u)" "$(id -g)" "$(shell_quote "$mp")"
+      fi
       df -h "$mp" | sed 's/^/    /'
     fi
   done

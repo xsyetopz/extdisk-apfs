@@ -10,10 +10,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-# Every shell file in the repository. The library files carry no extension-free
-# shebang, so they are listed by name rather than found by shebang.
-SHELL_FILES=(bin/extdisk-apfs lib/ui.sh lib/diskinfo.sh lib/guard.sh
-  lib/inspect.sh lib/erase.sh lib/verify.sh tests/run scripts/check)
+# Every shell file in the repository. The lib list is a glob rather than names,
+# so a new module is linted the moment it exists.
+SHELL_FILES=(bin/extdisk-apfs tests/run scripts/check)
+for _lib in lib/*.sh; do
+  SHELL_FILES+=("$_lib")
+done
+unset _lib
 
 FAILED=''
 

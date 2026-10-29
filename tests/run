@@ -24,6 +24,15 @@ SKIP=0
 . "$ROOT/lib/guard.sh"
 # shellcheck source=../lib/erase.sh
 . "$ROOT/lib/erase.sh"
+# shellcheck source=../lib/hosts.sh
+. "$ROOT/lib/hosts.sh"
+# shellcheck source=../lib/adopt.sh
+. "$ROOT/lib/adopt.sh"
+
+# A scratch directory for the catalogue fixtures and the shell startup file
+# that the env-block tests write. Removed on exit, including on a failure.
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/extdisk-tests.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
 
 pass() {
   PASS=$((PASS + 1))
@@ -185,6 +194,150 @@ if in_group no-such-group-xyz; then
 else
   pass 'in_group rejects a missing group'
 fi
+
+printf '\nthe shipped catalogue\n'
+if (hosts_validate) >/dev/null 2>&1; then
+  pass 'data/hosts.tsv passes validation'
+else
+  fail 'data/hosts.tsv passes validation' "$(hosts_validate 2>&1 | head -n 3)"
+fi
+equals 'every row has twelve fields' '' \
+  "$(awk -F'\t' '!/^#/ && NF > 0 && NF != 12 {print $1}' "$(hosts_file)")"
+if [ "$(host_ids | wc -l | tr -d ' ')" -gt 0 ]; then
+  pass 'the catalogue has entries'
+else
+  fail 'the catalogue has entries' 'host_ids was empty'
+fi
+equals 'an id resolves to one row' 1 "$(hosts_row homebrew-cache | wc -l | tr -d ' ')"
+equals 'an unknown id resolves to nothing' '' "$(hosts_row no-such-entry)"
+equals 'a field comes back by number' 'HOMEBREW_CACHE' \
+  "$(host_field 8 "$(hosts_row homebrew-cache)")"
+
+printf '\nvalidation catches a broken catalogue\n'
+# Arrange one fixture per defect, each a copy of a good row with one field
+# changed, so a passing validator has to be looking at that field.
+fixture_header="$(printf 'id\tcategory\tname\tscope\tdetect\tkind\tsubdir\tsetting\tquery\trevert\tsource\tnote')"
+good_row="$(printf 'good-row\tdev\tA good row\tpartial\tcmd:sh\tenv\tgood\tGOOD_VAR\t-\t-\ta source\t-')"
+write_fixture() {
+  printf '%s\n%s\n%s\n' "$fixture_header" "$good_row" "$1" >"$TMP/hosts.tsv"
+}
+refuses_fixture() {
+  local desc="$1" row="$2"
+  write_fixture "$row"
+  if (EXTDISK_HOSTS="$TMP/hosts.tsv" hosts_validate) >/dev/null 2>&1; then
+    fail "$desc" 'hosts_validate accepted it'
+  else
+    pass "$desc"
+  fi
+}
+write_fixture "$(printf 'other-row\taudio\tAnother\tfull\talways\tnone\t-\ta reason\t-\t-\ta source\t-')"
+if (EXTDISK_HOSTS="$TMP/hosts.tsv" hosts_validate) >/dev/null 2>&1; then
+  pass 'a well-formed fixture passes'
+else
+  fail 'a well-formed fixture passes' "$(EXTDISK_HOSTS="$TMP/hosts.tsv" hosts_validate 2>&1 | head -n 2)"
+fi
+refuses_fixture 'a duplicate id' "$good_row"
+refuses_fixture 'an id that is not kebab-case' \
+  "$(printf 'Bad_Id\tdev\tName\tpartial\tcmd:sh\tenv\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an unknown category' \
+  "$(printf 'row-two\tgames\tName\tpartial\tcmd:sh\tenv\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an unknown scope' \
+  "$(printf 'row-two\tdev\tName\tsome\tcmd:sh\tenv\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an unknown detect form' \
+  "$(printf 'row-two\tdev\tName\tpartial\tmaybe\tenv\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an unknown kind' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tmagic\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'a subdir with a slash' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tenv\ta/b\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an empty source' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tenv\tx\tX_VAR\t-\t-\t\t-')"
+# An empty field in the middle used to shift every later field by one, because
+# tab is an IFS whitespace character and read collapsed the two tabs.
+refuses_fixture 'an empty field in the middle' \
+  "$(printf 'row-two\tdev\t\tpartial\tcmd:sh\tenv\tx\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an env row with no subdir' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tenv\t-\tX_VAR\t-\t-\tsrc\t-')"
+refuses_fixture 'an env setting that is not a variable name' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tenv\tx\tsome words\t-\t-\tsrc\t-')"
+refuses_fixture 'a flag row with no %s' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tflag\tx\ttool --path\t-\t-\tsrc\t-')"
+refuses_fixture 'a cli row with no query' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tcli\tx\ttool set %%s\t-\ttool unset\tsrc\t-')"
+refuses_fixture 'a cli row with no revert' \
+  "$(printf 'row-two\tdev\tName\tpartial\tcmd:sh\tcli\tx\ttool set %%s\ttool get\t-\tsrc\t-')"
+
+printf '\nhost_installed\n'
+if host_installed always; then pass 'always'; else fail 'always'; fi
+if host_installed cmd:sh; then pass 'cmd: a command on the PATH'; else fail 'cmd: a command on the PATH'; fi
+if host_installed cmd:no-such-command-xyz; then
+  fail 'cmd: a missing command' 'returned true'
+else
+  pass 'cmd: a missing command'
+fi
+if host_installed path:/usr/bin; then pass 'path: a directory that exists'; else fail 'path: a directory that exists'; fi
+if host_installed path:/no/such/path; then
+  fail 'path: a missing path' 'returned true'
+else
+  pass 'path: a missing path'
+fi
+mkdir -p "$TMP/glob dir/Thing 1.app"
+if host_installed "glob:$TMP/glob dir/Thing*.app"; then
+  pass 'glob: a pattern with a space matches'
+else
+  fail 'glob: a pattern with a space matches' 'returned false'
+fi
+if host_installed "glob:$TMP/glob dir/Nothing*.app"; then
+  fail 'glob: a pattern that matches nothing' 'returned true'
+else
+  pass 'glob: a pattern that matches nothing'
+fi
+
+printf '\nhost_render and cli_argv\n'
+equals 'one placeholder' 'tool --path /V/x' "$(host_render 'tool --path %s' /V/x)"
+equals 'two placeholders' '/V/x and /V/x' "$(host_render '%s and %s' /V/x)"
+equals 'a path with a space' 'tool /V/a b' "$(host_render 'tool %s' '/V/a b')"
+equals 'a percent in the path stays literal' 'tool /V/100%' "$(host_render 'tool %s' '/V/100%')"
+cli_argv 'npm config set cache=%s' '/V/a b'
+equals 'the template becomes four arguments' 4 "${#CLI_ARGV[@]}"
+equals 'the path stays in one argument' 'cache=/V/a b' "${CLI_ARGV[3]}"
+cli_argv 'tool set %s' '/V/x'
+equals 'a lone placeholder is its own argument' '/V/x' "${CLI_ARGV[2]}"
+
+printf '\nthe environment block\n'
+ENVF="$TMP/zshenv"
+printf 'export EDITOR=vi\n' >"$ENVF"
+EXTDISK_ENV_FILE="$ENVF" env_block_write /Volumes/Probe 'A_VAR="/Volumes/Probe/a"' >/dev/null 2>&1
+equals 'the line that was there survives' 1 "$(grep -c '^export EDITOR=vi$' "$ENVF")"
+equals 'the variable is written' 1 "$(grep -c '^export A_VAR="/Volumes/Probe/a"$' "$ENVF")"
+EXTDISK_ENV_FILE="$ENVF" env_block_write /Volumes/Probe 'A_VAR="/Volumes/Probe/a"' >/dev/null 2>&1
+equals 'writing twice leaves one block' 1 "$(grep -c '^# >>> extdisk-apfs /Volumes/Probe >>>$' "$ENVF")"
+equals 'writing twice leaves one variable' 1 "$(grep -c '^export A_VAR=' "$ENVF")"
+EXTDISK_ENV_FILE="$ENVF" env_block_write /Volumes/Other 'B_VAR="/Volumes/Other/b"' >/dev/null 2>&1
+equals 'a second volume gets its own block' 2 "$(grep -c '^# >>> extdisk-apfs ' "$ENVF")"
+env_block_strip "$ENVF" /Volumes/Probe
+equals 'stripping removes that block' 0 "$(grep -c 'extdisk-apfs /Volumes/Probe ' "$ENVF")"
+equals 'stripping leaves the other block' 1 "$(grep -c '^export B_VAR=' "$ENVF")"
+equals 'stripping leaves the unrelated line' 1 "$(grep -c '^export EDITOR=vi$' "$ENVF")"
+equals 'the backup keeps the original' 1 \
+  "$(cat "$ENVF".extdisk-backup.* 2>/dev/null | grep -c '^export EDITOR=vi$')"
+
+printf '\nthe host commands\n'
+exits_zero 'hosts' "$BIN" hosts
+exits_zero 'hosts --all' "$BIN" hosts --all
+exits_zero 'validate' "$BIN" validate
+exits_zero 'explain a known id' "$BIN" explain homebrew-cache
+exits_nonzero 'explain an unknown id' "$BIN" explain no-such-entry
+exits_nonzero 'explain with no id' "$BIN" explain
+exits_nonzero 'hosts with an unknown option' "$BIN" hosts --nope
+exits_nonzero 'hosts with two volumes' "$BIN" hosts /Volumes/a /Volumes/b
+exits_nonzero 'host with no volume' "$BIN" host
+exits_nonzero 'host on a relative path' "$BIN" host relative/path --dry-run
+exits_nonzero 'host on the boot volume' "$BIN" host / --dry-run
+exits_nonzero 'host on a missing path' "$BIN" host /no/such/volume --dry-run
+exits_nonzero 'host with an unknown id' "$BIN" host / --only no-such-entry --dry-run
+exits_nonzero 'host with --only and no value' "$BIN" host / --only
+exits_nonzero 'unhost with no volume' "$BIN" unhost
+exits_nonzero 'unhost on the boot volume' "$BIN" unhost / --dry-run
 
 printf '\nguard_target against hardware\n'
 if [ -n "${EXTDISK_TEST_DISK:-}" ]; then

@@ -1,0 +1,66 @@
+# extdisk-apfs host catalogue. Tab-separated, twelve fields, one application or
+# tool per line. tests/run validates every line, so a malformed one fails CI.
+#
+# id        kebab-case, unique. This is what `host --only` takes.
+# category  dev | apple | audio | container
+# name      what to show a person
+# scope     full | partial | none
+#           full    the whole data directory or library can live on the volume
+#           partial only a cache, a build directory or a media folder can
+#           none    nothing can, and the setting field says why
+# detect    cmd:NAME | path:PATH | glob:PATTERN | always
+# kind      cli | env | ui | flag | file | none
+#           cli  a command of the tool writes the setting persistently
+#           env  an environment variable the tool documents
+#           ui   a setting inside a graphical application
+#           flag a per-invocation flag, so there is nothing to persist
+#           file a key in a configuration file, with no command to write it
+#           none no documented mechanism
+# subdir    directory to create on the volume, or - when the app makes its own
+# setting   cli:  an argv template, space-separated, %s for the path
+#           env:  the variable name
+#           flag: the flag as you would type it, %s for the path
+#           ui:   the steps, as one sentence, %s for the path
+#           file: the key and the file to put it in, %s for the path
+#           none: the reason nothing can move
+# query     cli: an argv template that prints the current value, otherwise -
+# revert    cli: an argv template that undoes the setting, otherwise -
+# source    where the claim comes from: a command, a man page, or a URL
+# note      a requirement or a consequence worth knowing, or -
+#
+# `host` applies the cli and env rows and creates the directories. It prints
+# the flag, file and ui rows, because nothing persistent exists to write.
+# A row with no verified source does not belong in this file.
+id	category	name	scope	detect	kind	subdir	setting	query	revert	source	note
+homebrew-cache	dev	Homebrew download cache	partial	cmd:brew	env	homebrew-cache	HOMEBREW_CACHE	-	-	man brew	Default is ~/Library/Caches/Homebrew.
+npm-cache	dev	npm package cache	partial	cmd:npm	cli	npm-cache	npm config set cache=%s	npm config get cache	npm config delete cache	npm config --help, and a set and delete pair run in a throwaway HOME	Written to ~/.npmrc.
+bun-cache	dev	Bun install cache	partial	cmd:bun	env	bun-cache	BUN_INSTALL_CACHE_DIR	-	-	https://bun.sh/docs/install/cache, confirmed with bun pm cache under the variable	A --cache-dir flag does the same for one run.
+uv-cache	dev	uv Python cache	partial	cmd:uv	env	uv-cache	UV_CACHE_DIR	-	-	uv --help prints [env: UV_CACHE_DIR=], confirmed with uv cache dir	-
+pip-cache	dev	pip download cache	partial	cmd:pip3	env	pip-cache	PIP_CACHE_DIR	-	-	https://pip.pypa.io/en/stable/cli/pip/, confirmed with pip3 cache dir	pip config set has no documented key for the cache directory.
+cargo-home	dev	Rust Cargo home	full	cmd:cargo	env	cargo-home	CARGO_HOME	-	-	https://doc.rust-lang.org/cargo/guide/cargo-home.html	Holds the registry cache, the config, and the binaries cargo install puts on your PATH, which stop working when the drive is detached.
+go-modcache	dev	Go module cache	partial	cmd:go	cli	go-modcache	go env -w GOMODCACHE=%s	go env GOMODCACHE	go env -u GOMODCACHE	https://go.dev/ref/mod	go env -w writes a per-user config file, so it outlives the shell.
+go-build-cache	dev	Go build cache	partial	cmd:go	cli	go-build-cache	go env -w GOCACHE=%s	go env GOCACHE	go env -u GOCACHE	https://pkg.go.dev/cmd/go	The path must be absolute.
+gradle-user-home	dev	Gradle user home	full	cmd:gradle	env	gradle-home	GRADLE_USER_HOME	-	-	https://docs.gradle.org/current/userguide/directory_layout.html	Holds the caches, the daemon registry and JDKs downloaded for toolchains.
+yarn-classic-cache	dev	Yarn classic cache	partial	cmd:yarn	cli	yarn-cache	yarn config set cache-folder %s	yarn config get cache-folder	yarn config delete cache-folder	https://classic.yarnpkg.com/en/docs/cli/cache	YARN_CACHE_FOLDER does the same thing.
+pnpm-store	dev	pnpm store	partial	cmd:pnpm	file	pnpm-store	storeDir: %s in ~/.config/pnpm/config.yaml	-	-	https://pnpm.io/settings/store	pnpm hard-links out of the store, and a store on another disk makes it copy instead.
+maven-local-repo	dev	Maven local repository	partial	cmd:mvn	file	maven-repo	<localRepository>%s</localRepository> in ~/.m2/settings.xml	-	-	https://maven.apache.org/settings.html	-
+xcode-derived-data	dev	Xcode derived data	partial	cmd:xcodebuild	flag	DerivedData.noindex	xcodebuild -derivedDataPath %s	-	-	xcodebuild -help	The settings window has the same location, under Derived data location.
+xcode-archives	dev	Xcode archives	partial	cmd:xcodebuild	flag	Archives	xcodebuild -archivePath %s/MyApp.xcarchive archive	-	-	man xcodebuild, settled by two archive runs	-archivePath names the bundle, not a parent directory.
+xcode-cloned-packages	dev	Xcode cloned source packages	partial	cmd:xcodebuild	flag	SourcePackages	xcodebuild -clonedSourcePackagesDirPath %s	-	-	xcodebuild -help	-
+swiftpm-scratch	dev	Swift Package Manager build directory	partial	cmd:swift	flag	spm-build	swift build --scratch-path %s	-	-	swift build --help	Replaces the package's .build directory.
+swiftpm-cache	dev	Swift Package Manager cache	partial	cmd:swift	flag	spm-cache	swift build --cache-path %s	-	-	swift build --help	--config-path is available too.
+simulator-device-set	dev	CoreSimulator device set	partial	cmd:xcrun	flag	CoreSimulator	xcrun simctl --set %s	-	-	xcrun simctl help, and simctl names a missing set path when it rejects it	The directory must exist first. Xcode and Simulator.app keep using the default set.
+simulator-runtimes	dev	Simulator runtimes	none	cmd:xcrun	none	-	simctl runtime add takes no destination, and a runtime goes to the secure storage area on the boot volume	-	-	xcrun simctl help runtime	Reclaim the space with simctl runtime delete instead.
+xcode-device-support	dev	Xcode iOS device support	none	cmd:xcodebuild	none	-	no flag for it exists in xcodebuild -help or xcrun simctl help	-	-	xcodebuild -help, xcrun simctl help	Delete the OS versions you no longer debug.
+docker-desktop-disk	container	Docker Desktop disk image	full	path:/Applications/Docker.app	ui	docker-disk	Settings > Resources > Advanced, set Disk image location to %s	-	-	https://docs.docker.com/desktop/settings-and-maintenance/settings/	The image holds every container and image, so this is the whole data directory.
+photos-library	apple	Photos library	full	path:/System/Applications/Photos.app	ui	-	Quit Photos, drag Photos Library from ~/Pictures to %s, then double-click it there. Hold Option while opening Photos to choose a library	-	-	https://support.apple.com/en-us/108345	Apple requires an APFS or Mac OS Extended volume, not a Time Machine one, and the drive connected before Photos opens.
+music-media-folder	apple	Music media folder	partial	path:/System/Applications/Music.app	ui	Music	Music > Settings > Files > Change, then select %s	-	-	https://support.apple.com/guide/music/mus69248042d/mac	Items already imported stay where they are; only new ones go to the new folder.
+tv-media-folder	apple	TV media folder	partial	path:/System/Applications/TV.app	ui	TV	TV > Settings > Files > Change, then select %s	-	-	https://support.apple.com/guide/tvapp-mac/tv0f5accea/mac	Same as Music: the setting governs new imports.
+final-cut-library	apple	Final Cut Pro libraries	full	path:/Applications/Final Cut Pro.app	ui	FinalCut	Select the library, then File > Library Properties > Modify Settings, and point Media, Cache and Backups at %s	-	-	https://support.apple.com/guide/final-cut-pro/ver7db6ffe77/mac	Set per library. Media and backups already in place stay where they are.
+imovie-library	apple	iMovie library	full	path:/Applications/iMovie.app	ui	-	Quit iMovie, drag iMovie Library from ~/Movies to %s, then double-click it there	-	-	https://support.apple.com/en-us/102186	Not a Time Machine volume. Without the drive connected, iMovie opens a new empty library in ~/Movies.
+logic-sound-library	audio	Logic Pro and MainStage sound library	full	path:/Applications/Logic Pro.app	ui	-	Logic Pro 12 or MainStage 4: move Logic Pro Library.bundle out of the Music folder to %s. Earlier versions: Logic Pro > Sound Library > Relocate Sound Library	-	-	https://support.apple.com/en-us/111094	Apple Loops and Impulse Responses are not relocated. Do not rename the volume afterwards.
+audio-units	audio	Audio Unit plug-ins	none	always	none	-	the system searches exactly three directories, all on the boot volume, and no API adds one	-	-	https://developer.apple.com/documentation/audiotoolbox/audio-components	Sample content that a plug-in loads can live on the volume; the bundle cannot.
+native-access-content	audio	Native Instruments content	full	path:/Applications/Native Access.app	ui	NI-Content	Native Access > Preferences > File Management, point Content at %s	-	-	https://support.native-instruments.com/support/solutions/articles/69000879242-native-access-changing-install-locations	The setting governs future installations. Move an installed product, then use Library > Repair and Locate.
+spectrasonics-steam	audio	Spectrasonics STEAM folder	full	path:/Library/Application Support/Spectrasonics	ui	STEAM	Copy the STEAM folder to %s, then put a Finder alias to it in ~/Library/Application Support/Spectrasonics	-	-	https://support.spectrasonics.net/manual/Omnisphere/get_started/page04.html	Spectrasonics documents a Finder alias, not a symbolic link.
+ableton-packs	audio	Ableton Live Packs	partial	glob:/Applications/Ableton Live*.app	ui	Ableton-Packs	Live > Settings > Library, click Browse next to Installation Folder for Packs, then select %s	-	-	https://help.ableton.com/hc/en-us/articles/360011720599-Managing-Packs	Live offers to move the Packs you already have. The User Library is a separate location.
+toontrack-libraries	audio	Toontrack sound libraries	full	path:/Library/Application Support/Toontrack	ui	Toontrack	EZdrummer 3: Settings > Libraries Paths. Superior Drummer 3: Settings > Libraries Settings. Point either at %s	-	-	https://www.toontrack.com/faq/how-do-i-move-my-sound-libraries-expansions-to-an-external-drive/	Move whole library folders. Toontrack says never to move individual files inside them.

@@ -1,4 +1,4 @@
-# extdisk-apfs
+# `extdisk-apfs`
 
 [![check](https://github.com/xsyetopz/extdisk-apfs/actions/workflows/check.yml/badge.svg)](https://github.com/xsyetopz/extdisk-apfs/actions/workflows/check.yml)
 
@@ -32,8 +32,15 @@ cd extdisk-apfs
 ./bin/extdisk-apfs list
 ```
 
-To run it from anywhere, put `bin` on your `PATH`, or symlink
-`bin/extdisk-apfs` and set `EXTDISK_LIB` to the repository's `lib` directory.
+To run it from anywhere, symlink it onto your `PATH`:
+
+```bash
+ln -s "$PWD/bin/extdisk-apfs" /opt/homebrew/bin/extdisk-apfs
+```
+
+The script follows the symlink to its own directory, so `lib` and `data` are
+found without any variable. `EXTDISK_LIB` and `EXTDISK_HOSTS` override those
+two paths if you need them elsewhere.
 
 ## Use
 
@@ -41,8 +48,12 @@ To run it from anywhere, put `bin` on your `PATH`, or symlink
 extdisk-apfs list                 # external physical disks, as candidates
 extdisk-apfs show disk4           # its partition map and mounted volumes
 extdisk-apfs erase disk4 --label Scratch --dry-run
-extdisk-apfs erase disk4 --label Scratch --enable-owners
+extdisk-apfs erase disk4 --label Scratch --own
 extdisk-apfs verify disk4         # partition map, container, volume, capacity
+extdisk-apfs hosts /Volumes/Scratch        # what can keep data there
+extdisk-apfs explain cargo-home            # one entry, with its source
+extdisk-apfs host /Volumes/Scratch         # apply what can be persisted
+extdisk-apfs unhost /Volumes/Scratch       # undo exactly that
 ```
 
 `list` output on the machine this was written on:
@@ -101,6 +112,46 @@ makes the on-disk user and group IDs count, by editing the Volume Database on
 the host; it does not give you access to a root-owned directory. Use it when
 you will restore a tree whose owners must survive.
 
+## Hosting Application Data
+
+A formatted volume is only useful once applications keep data on it. Which ones
+can is not a matter of opinion: either the vendor documents a setting or it does
+not. `data/hosts.tsv` is that answer, one application per line with the source
+it came from, and the tool reads it.
+
+```bash
+$ extdisk-apfs hosts /Volumes/Scratch
+
+  dev
+  ID                       NAME                                   HOSTS    HOW    INSTALLED
+  homebrew-cache           Homebrew download cache                partial  env    yes
+  npm-cache                npm package cache                      partial  cli    yes
+  cargo-home               Rust Cargo home                        full     env    yes
+  xcode-derived-data       Xcode derived data                     partial  flag   yes
+  simulator-runtimes       Simulator runtimes                     none     none   yes
+```
+
+`HOW` is the mechanism, and it decides what `host` can do:
+
+| Mechanism | `extdisk-apfs host` |
+|---|---|
+| `cli` | Runs the tool's own command, such as `npm config set cache=PATH`. `unhost` runs the documented undo. |
+| `env` | Writes the variable into a marked block in `~/.zshenv`, or `~/.bash_profile` under bash. `unhost` removes the block. |
+| `flag` | Prints it. A per-invocation flag such as `xcodebuild -derivedDataPath` has nothing to persist. |
+| `file` | Prints it. The key belongs in a config file this tool will not rewrite for you. |
+| `ui` | Prints the steps. The setting lives in a graphical application. |
+| `none` | Says why nothing can move, such as Audio Units, which load from three fixed directories on the boot volume. |
+
+`host` creates the directories and applies the first two. It copies, moves and
+deletes nothing: a cache refills itself, and a sample library is yours to drag
+by the vendor's own procedure. `unhost` undoes only what `host` wrote, and only
+where the setting still points at that volume; the directories and their
+contents stay.
+
+`extdisk-apfs explain <id>` shows one entry with its source and its
+requirements. [docs/hosts.md](docs/hosts.md) describes the file format, how to
+add an entry, and the gaps where no vendor page could be read.
+
 ## Which Targets Are Refused
 
 `erase` stops, with the reason named, when the target is:
@@ -158,10 +209,13 @@ this re-check.
   measured. For data that must be unrecoverable, encrypt from the start, or use
   the drive's own sanitize facility.
 - **No internal disks.** By design. See the refusals above.
-- **No data migration.** Nothing is copied, moved, or symlinked. Where
-  development and audio data may go afterwards is in
-  [docs/external-storage.md](docs/external-storage.md), which separates the
-  documented settings from the symlink workarounds.
+- **No data migration.** Nothing is copied, moved, or symlinked, by `erase` or
+  by `host`. `host` creates empty directories and writes settings; the data
+  that lands in them arrives because an application put it there.
+  [docs/external-storage.md](docs/external-storage.md) is the long-form
+  evidence behind the Xcode, simulator, Spotlight, Time Machine and Audio Unit
+  entries, and it separates the documented settings from the symlink
+  workarounds.
 - **No multi-partition layouts.** One APFS volume on the whole disk. For more,
   `diskutil apfs addVolume` adds volumes to the container afterwards, and they
   share its free space.
@@ -196,7 +250,7 @@ scripts/check tests        # tests/run
 `scripts/check` is what CI runs, so a green run locally is a green run there.
 The checks are:
 
-- **`shellcheck`** over all nine shell files, including `tests/run` and
+- **`shellcheck`** over every shell file, including `tests/run` and
   `scripts/check` themselves. The settings live in `.shellcheckrc`, so an
   editor plugin reports the same findings: `shell=bash` because the library
   files have no shebang and would otherwise be read as POSIX `sh`,
@@ -251,7 +305,10 @@ The code is split by concern:
 | `lib/inspect.sh` | Listing candidates and showing a layout |
 | `lib/erase.sh` | The destructive step and the post-format settings |
 | `lib/verify.sh` | The report after a format |
+| `lib/hosts.sh` | Reading the host catalogue and reporting it |
+| `lib/adopt.sh` | Writing the settings that point an app at the volume |
 | `lib/ui.sh` | Output, shell quoting, the confirmation prompt |
+| `data/hosts.tsv` | The catalogue: one application per line, with its source |
 | `tests/run` | The checks that need no external disk |
 | `scripts/check` | Every check, for a shell and for CI |
 

@@ -10,12 +10,23 @@
 
 set -euo pipefail
 
-VERSION='1.2.0'
+VERSION='1.3.0'
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Follow a symlink chain to the real script, so that a link on your PATH, such
+# as /opt/homebrew/bin/extdisk-apfs, finds lib and data without EXTDISK_LIB.
+# readlink -f would be one call, but the macOS readlink has no -f.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 LIB="${EXTDISK_LIB:-$ROOT/lib}"
 
-for unit in ui diskinfo guard inspect erase verify; do
+for unit in ui diskinfo guard inspect erase verify hosts adopt; do
   [ -r "$LIB/$unit.sh" ] || {
     printf 'error: cannot read %s/%s.sh; set EXTDISK_LIB to the lib directory\n' "$LIB" "$unit" >&2
     exit 1
@@ -35,12 +46,29 @@ usage:
   extdisk-apfs show   <disk>
   extdisk-apfs erase  <disk> --label <name> [options]
   extdisk-apfs verify <disk>
+  extdisk-apfs hosts  [--all] [<volume>]
+  extdisk-apfs host   <volume> [--only <id,id>] [--dry-run]
+  extdisk-apfs unhost <volume> [--dry-run]
+  extdisk-apfs explain <id> [<volume>]
 
 commands:
   list            Show every external physical disk, as candidates.
   show            Show one disk's current partition map and mounted volumes.
   erase           Erase the disk and create one APFS volume. Destroys all data.
   verify          Report the partition map, container, volume and capacity.
+  hosts           Show which applications can keep data on the volume, and
+                  which of them are installed. --all includes the rest.
+  host            Create the directories and apply every setting that a
+                  command or an environment variable can persist. Prints the
+                  ones only you can set. Moves no data.
+  unhost          Remove what host wrote, and leave every file in place.
+  explain         Show one catalogue entry: the mechanism, the exact setting,
+                  the source it came from, and what to know before using it.
+
+host options:
+  --only <id,id>  Restrict to these catalogue ids. Default is everything
+                  installed.
+  --dry-run       Print every command and every line, write nothing.
 
 erase options:
   --label <name>        Volume name. Required, because diskutil requires one.
@@ -65,8 +93,12 @@ erase options:
 examples:
   extdisk-apfs list
   extdisk-apfs show disk4
-  extdisk-apfs erase disk4 --label Scratch --enable-owners
+  extdisk-apfs erase disk4 --label Scratch --enable-owners --own
   extdisk-apfs erase disk4 --label Scratch --dry-run
+  extdisk-apfs hosts /Volumes/Scratch
+  extdisk-apfs explain homebrew-cache /Volumes/Scratch
+  extdisk-apfs host /Volumes/Scratch --dry-run
+  extdisk-apfs host /Volumes/Scratch --only homebrew-cache,npm-cache
 
 The tool refuses any target that is internal, virtual, read-only, a partition
 rather than a whole disk, or part of the boot disk's storage.
@@ -179,6 +211,60 @@ cmd_erase() {
   ok "$disk is now GPT with one $personality volume '$label' at $mount_point"
 }
 
+cmd_hosts() {
+  local all=0 volume=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all) all=1; shift ;;
+      --*) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
+      *)
+        [ -z "$volume" ] || die "hosts takes one volume, and got '$volume' and '$1'"
+        volume="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -z "$volume" ] || guard_volume "$volume"
+  print_hosts "$volume" "$all"
+}
+
+cmd_host() {
+  local volume="${1:-}" only=''
+  shift || true
+  [ -n "$volume" ] || die "host needs a volume, such as /Volumes/Scratch"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --only)
+        [ $# -ge 2 ] || die "--only needs a comma-separated list of ids"
+        only="$2"
+        shift 2
+        ;;
+      --only=*) only="${1#--only=}"; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
+    esac
+  done
+  local id
+  for id in $(printf '%s' "$only" | tr ',' ' '); do
+    [ -n "$(hosts_row "$id")" ] || die "no catalogue entry with id '$id'; run 'extdisk-apfs hosts --all'"
+  done
+  host_volume "$volume" "$only"
+}
+
+cmd_unhost() {
+  local volume="${1:-}"
+  shift || true
+  [ -n "$volume" ] || die "unhost needs a volume, such as /Volumes/Scratch"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY_RUN=1; shift ;;
+      *) die "unknown option '$1'; run 'extdisk-apfs' for the usage" ;;
+    esac
+  done
+  guard_volume "$volume"
+  unhost_volume "$volume"
+}
+
 case "${1:-}" in
   list) print_candidates ;;
   show)
@@ -194,6 +280,24 @@ case "${1:-}" in
     [ -n "${2:-}" ] || die "verify needs a disk identifier"
     verify_disk "$2"
     ;;
+  hosts)
+    shift
+    cmd_hosts "$@"
+    ;;
+  host)
+    shift
+    cmd_host "$@"
+    ;;
+  unhost)
+    shift
+    cmd_unhost "$@"
+    ;;
+  explain)
+    [ -n "${2:-}" ] || die "explain needs a catalogue id; run 'extdisk-apfs hosts --all' for the ids"
+    [ -z "${3:-}" ] || guard_volume "$3"
+    print_host "$2" "${3:-}"
+    ;;
+  validate) hosts_validate || die "the catalogue has a problem" ;;
   --version | -V) say "extdisk-apfs $VERSION" ;;
   help | --help | -h | '') usage ;;
   *) die "unknown command '$1'; run 'extdisk-apfs' for the usage" ;;
