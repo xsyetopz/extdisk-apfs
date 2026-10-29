@@ -77,6 +77,9 @@ produced `Probe.xcarchive`, and `-archivePath .../outdir` produced
 xcodebuild -scheme MyApp -archivePath /Volumes/X/Archives/MyApp.xcarchive archive
 ```
 
+These flags apply to one invocation. A persistent setting exists too; see
+[The Settings Window](#the-settings-window).
+
 ### The Settings Window
 
 Xcode's settings carry the same two locations. The control labels, read from
@@ -92,9 +95,45 @@ The preference keys behind them exist in `IDEFoundation.framework`:
 
 Apple publishes no documentation page for these settings; a search of
 developer.apple.com for the Xcode derived data and archives locations returns no
-such article. So the keys are real but undocumented. Set the locations through
-the settings window or the `xcodebuild` flags, and treat
-`defaults write com.apple.dt.Xcode IDECustomDerivedDataLocation` as unsupported.
+such article. So the keys are real but undocumented.
+
+They are also honoured. On Xcode 27.1 (build 27A9275), `defaults write
+com.apple.dt.Xcode IDECustomDerivedDataLocation -string /tmp/ddprobe/DD` and
+then `xcodebuild -scheme Probe -destination 'platform=macOS' build` on a
+throwaway `swift package init --type library` succeeded and filled
+`/tmp/ddprobe/DD` with `CompilationCache.noindex`, `ModuleCache.noindex`,
+`SDKExplicitPrecompiledModules`, `SDKStatCaches.noindex` and two
+`...-djuxcbbnibazutgzwbicdrestqjz` directories, one for the scheme and one for
+the package. `~/Library/Developer/Xcode/DerivedData` stayed empty (`total 0`).
+The same build with the key set to `/Volumes/DevAudioStore/DerivedData.noindex`
+put the same six entries there and left the default location empty again.
+
+The key is the only way found to persist the location for a plain `xcodebuild`
+run with no flag. The settings window carries the same locations and is the
+other way to set them for Xcode.app:
+
+```bash
+defaults write com.apple.dt.Xcode IDECustomDerivedDataLocation -string /Volumes/X/DerivedData.noindex
+defaults write com.apple.dt.Xcode IDECustomDistributionArchivesLocation -string /Volumes/X/Archives
+```
+
+The bare form of these commands, without `-string`, is the template in the
+catalogue. It was verified through the tool: `extdisk-apfs host --only
+xcode-derived-data,xcode-archives` applied both keys, and `defaults read`
+returned the two volume paths.
+
+The archives key was built against too. With
+`IDECustomDistributionArchivesLocation` set to `/Volumes/DevAudioStore/Archives`,
+`xcodebuild -scheme ArProbe -destination 'platform=macOS' archive` with no
+`-archivePath` printed `archive ok`, and `find /Volumes/DevAudioStore/Archives
+-maxdepth 2` listed `2026-10-29/ArProbe 29.10.2026, 18.47.xcarchive`, while
+`~/Library/Developer/Xcode/Archives` did not exist. So Xcode puts the archive
+under a `<date>/` subdirectory of the configured location: the configured path
+is a parent, not the bundle. The risk stays: Apple does not document either key, so a future
+Xcode may rename or ignore them, and a build fails while the volume holding the
+custom path is detached. `xcodebuild -derivedDataPath` overrides the key for one
+invocation. `defaults delete com.apple.dt.Xcode IDECustomDerivedDataLocation`
+restores the default.
 
 ### Swift Package Manager
 
@@ -117,51 +156,13 @@ supported way to move the folder.
 
 ## The Simulator
 
-### Device Sets Take a Path
-
-`xcrun simctl help` gives the usage line `simctl [--set <path>] [--profiles
-<path>] <subcommand> ...`, so every subcommand takes a device set path, and
-`simctl` validates it:
-
-```bash
-$ xcrun simctl --set /tmp/dsprobe/set2 list devices
-Provided set path does not exist: /tmp/dsprobe/set2
-```
-
-The directory must exist first. The default set stays at
-`~/Library/Developer/CoreSimulator`.
-
-```bash
-mkdir -p /Volumes/X/CoreSimulator
-xcrun simctl --set /Volumes/X/CoreSimulator list devices
-```
-
-This is a per-invocation flag for `simctl`. There is no equivalent for the Xcode
-and Simulator applications: the environment variable
-`CORESIMULATOR_DEVICE_SET_PATH` does not exist in the installed
-`CoreSimulator.framework` binary or in `simctl`.
-
-A device set only writes its `device_set.plist` once it holds a device, and this
-machine has no simulator runtimes installed, so no device could be created to
-show that file appearing in an alternate set. The path validation above is the
-evidence that the option is honoured.
-
-### Runtimes Cannot Be Moved
-
-`xcrun simctl help runtime` says `add <path>` adds a runtime disk image "to the
-secure storage area", and no subcommand takes a destination. Reclaim the space
-instead:
-
-```bash
-xcrun simctl runtime delete --outdated --dry-run
-xcrun simctl runtime delete --notUsedSinceDays 90
-xcrun simctl runtime delete --unusable
-xcrun simctl delete unavailable
-```
-
-`xcrun simctl help delete`: "Specifying unavailable will delete devices that are
-not supported by the current Xcode SDK." `--dry-run` prints what
-`runtime delete` would remove without removing it.
+The simulator is its own long story, and the answer for an external volume is
+almost entirely no. [simulator-storage.md](simulator-storage.md) has it: device
+sets take a `--set` path but creating a device in a set on an external volume
+fails with a permission error from `CoreSimulatorService`, symlinking the CoreSimulator directories breaks both runtime installation and
+device creation, the runtime itself lives in a system asset location, and the
+only part the volume can hold is the downloaded installer bundle. It also
+explains why there is no iPadOS runtime to install.
 
 ## Spotlight
 
@@ -203,61 +204,6 @@ undefined if a sticky or fixed-path exclusion is specified". It needs root and
 Full Disk Access. Erasing the volume resets Time Machine to its default
 behaviour for the new volume, so re-add the exclusion after a reformat.
 
-## Audio Units Cannot Live on an External Volume
-
-Apple's Audio Toolbox documentation for
-[Audio Components](https://developer.apple.com/documentation/audiotoolbox/audio-components)
-states that the system searches for `.audiocomp` and `.component` bundles in
-exactly three locations:
-
-- `~/Library/Audio/Plug-Ins/Components`
-- `/Library/Audio/Plug-Ins/Components`
-- `/System/Library/Components`
-
-All three are on the boot volume, and no API adds a search path;
-`AudioComponentRegister` registers a component in the calling process only. So
-an Audio Unit v2 `.component` bundle has to sit in one of those three
-directories. An Audio Unit v3 plug-in is delivered as an app extension inside an
-application, so its location is wherever that application is installed.
-
-What you can move is the sample content, which each vendor's installer usually
-lets you place. Apple's support page
-[Where are third-party Audio Units plug-ins installed on Mac?](https://support.apple.com/en-us/102239)
-lists the first two directories and says nothing about external volumes.
-
-## Logic Pro and MainStage Content
-
-From Apple's support page
-[Move Logic Pro for Mac and MainStage content](https://support.apple.com/en-us/111094):
-
-- **Logic Pro 12 or MainStage 4 or later.** "In the Music folder on your Mac,
-  locate the file called "Logic Pro Library.bundle."" Move that bundle to the
-  external drive.
-- **Logic Pro 11.2.2 or MainStage 3.7.1 or earlier.** Choose "Logic Pro >
-  Sound Library > Relocate Sound Library".
-
-The page's own requirements, quoted:
-
-- "You can't store the Sound Library on a volume used for Time Machine backups."
-- "Don't rename the storage device or volume after you've moved the Sound
-  Lbrary." The misspelling is Apple's.
-- "If you have more than one Mac running Logic Pro or MainStage, each Mac needs
-  its own Sound Library."
-- "Make sure to click Allow when Logic Pro or MainStage asks for permission to
-  access the external device."
-
-The page also covers formatting a drive that "isn't formatted for use with Mac",
-enabling Removable Volumes under Privacy & Security > Files and Folders if
-relocation is refused, and moving the library back.
-
-**Apple Loops are not part of the move.** The Logic Pro 10.4 user guide page
-[Manage Logic Pro content](https://help.apple.com/logicpro/mac/10.4/en.lproj/lgcpf77e757d.html)
-states that "When you relocate the Sound Library, all Sound Library content
-except for Apple Loops and Impulse Responses" "is moved to the new location."
-The current support page says nothing about Apple Loops, and Apple documents no
-supported way to put them on an external drive. Symlinking them is a user
-practice found in Apple Community threads, not a supported configuration.
-
 ## Other Tool Caches
 
 ```bash
@@ -272,6 +218,11 @@ the current path.
 
 ## How Each Claim Was Checked
 
+This table covers all three storage documents: this file,
+[simulator-storage.md](simulator-storage.md) and
+[audio-storage.md](audio-storage.md). Some rows are for text that lives in the
+other two.
+
 | Claim | Method |
 | --- | --- |
 | Volume root is root-owned and unwritable | `stat -f`, `touch`, `id -Gn` on the erased volume |
@@ -282,6 +233,18 @@ the current path.
 | Xcode settings labels and options | `strings` on the `IDESettingsPanel` and `IDEKit` binaries |
 | Xcode preference keys exist | `grep -aow -c` on the `IDEFoundation` binary |
 | No Apple article for those settings | search of developer.apple.com |
+| `IDECustomDerivedDataLocation` is honoured | `xcodebuild` build with the key set, twice; the default location checked empty afterwards |
+| `IDECustomDistributionArchivesLocation` is honoured, and holds a parent | `xcodebuild archive` with the key set and no `-archivePath`, then `find -maxdepth 2` on the volume and `ls` of the default location, which did not exist |
+| The bare `defaults write` template works | `extdisk-apfs host --only xcode-derived-data,xcode-archives`, then `defaults read` returned both paths |
+| A device set on the volume fails with `EPERM` from `CoreSimulatorService` | `simctl --set` create on the volume, which stuck in `Creating`, then `CoreSimulator.log` (`Code=513` wrapping `Code=1`), against a successful `touch` and `cp -R` as the same user |
+| A TCC denial causes that `EPERM` | Inference only: the best explanation of `EPERM` on a writable path. No grant was tried, and whether the daemon can be granted access is unknown |
+| Symlinking `CoreSimulator/Caches` breaks runtime install | `xcodebuild -downloadPlatform iOS` through the symlink, which failed at registration |
+| Symlinking `CoreSimulator/Devices` breaks device creation | `simctl create` through the symlink, plus `CoreSimulator.log` holding the same "copying sample content" failure at a `Devices` path and at a `--set` path with no symlink |
+| The installer export lands on the volume | `xcodebuild -downloadPlatform iOS -buildVersion 27.2 -exportPath` on the volume, then `du -sh` (7.7 GB) and `ls` of `iphonesimulator_27.2_24B114.exportedBundle` |
+| `-importPlatform` reinstalls an exported bundle | Documentation only: `xcodebuild -help` lists `-importPlatform <simruntimedmgpath>`. Not run |
+| 43 iPad device types with no runtime | `xcrun simctl list devicetypes \| grep -ci ipad`, run before any runtime was installed |
+| The default set holds 11 iOS 27.2 devices | `xcrun simctl list devices` after the runtime registered: 5 iPhones and 6 iPads, all `Shutdown`; `iPhone 18 Pro` was booted, reported `Booted`, and shut down |
+| Runtimes install and run once those paths are real | `simctl runtime list`, then `simctl create` and `simctl boot` of an iPhone 18 Pro on iOS 27.2 |
 | SwiftPM path flags | `swift build --help` |
 | `simctl --set` is honoured | `simctl --set` on a missing path, which it rejects by name |
 | `CORESIMULATOR_DEVICE_SET_PATH` absent | `strings` on `CoreSimulator` and `simctl` |
@@ -294,7 +257,11 @@ the current path.
 | Apple Loops excluded from relocation | Logic Pro 10.4 user guide |
 | `HOMEBREW_CACHE`, `bun --cache-dir` | `man brew`, `bun install --help` |
 
-Nothing here was verified against a running Xcode, Logic Pro or MainStage
-window, because this machine has no simulator runtimes and neither Logic Pro nor
-MainStage installed. Where that mattered, the claim comes from Apple's own
-documentation and says so above.
+The two location keys and the simulator claims were verified by running
+`xcodebuild`, `simctl` and a simulator boot, except `-importPlatform` (not run)
+and the TCC cause of the `EPERM` (an inference). What is still unverified here was
+not verified against a running Xcode.app, Logic Pro or MainStage window: the
+settings window was not opened, so that it stores the same keys is not observed,
+and neither Logic Pro nor MainStage is installed. Where that mattered, the claim
+comes from Apple's own documentation and says so above. The Audio Unit and Logic
+Pro sections are in [audio-storage.md](audio-storage.md).

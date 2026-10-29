@@ -429,6 +429,9 @@ printf '\nhost against hardware\n'
 # into $TMP, so the volume and your startup file are not written to.
 if [ -n "${EXTDISK_TEST_VOLUME:-}" ]; then
   export EXTDISK_ENV_FILE="$TMP/hardware-zshenv"
+  # The volume may be empty or already hosted, so the check is that the dry
+  # runs leave its top-level entries as they were, not that one is absent.
+  VOLUME_BEFORE="$(find "$EXTDISK_TEST_VOLUME" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)"
   exits_zero "hosts $EXTDISK_TEST_VOLUME" "$BIN" hosts "$EXTDISK_TEST_VOLUME"
   exits_zero "host $EXTDISK_TEST_VOLUME --dry-run" \
     "$BIN" host "$EXTDISK_TEST_VOLUME" --dry-run
@@ -440,10 +443,11 @@ if [ -n "${EXTDISK_TEST_VOLUME:-}" ]; then
     "$BIN" unhost "$EXTDISK_TEST_VOLUME" --dry-run
   exits_zero "explain with $EXTDISK_TEST_VOLUME" \
     "$BIN" explain homebrew-cache "$EXTDISK_TEST_VOLUME"
-  if [ -e "$EXTDISK_TEST_VOLUME/homebrew-cache" ]; then
-    fail 'a dry run creates no directory' "$EXTDISK_TEST_VOLUME/homebrew-cache exists"
-  else
+  VOLUME_AFTER="$(find "$EXTDISK_TEST_VOLUME" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)"
+  if [ "$VOLUME_BEFORE" = "$VOLUME_AFTER" ]; then
     pass 'a dry run creates no directory'
+  else
+    fail 'a dry run creates no directory' "entries changed: $(printf '%s\n%s\n' "$VOLUME_BEFORE" "$VOLUME_AFTER" | LC_ALL=C sort | uniq -u | tr '\n' ' ')"
   fi
   unset EXTDISK_ENV_FILE
 else

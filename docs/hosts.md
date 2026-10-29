@@ -110,6 +110,16 @@ a throwaway `HOME` to confirm both directions; `xcodebuild -help`,
 `-archivePath` semantics were settled by two `xcodebuild archive` runs, because
 the man page and `-help` disagree.
 
+The Xcode keys were checked by `defaults` builds: `xcodebuild build` and
+`xcodebuild archive` with `IDECustomDerivedDataLocation` and
+`IDECustomDistributionArchivesLocation` set, then the default locations
+inspected. The simulator was checked by running `simctl create` and `simctl
+boot`, by attempting a `--set` directory and symlinked `Caches` and `Devices`
+directories, and by reading `~/Library/Logs/CoreSimulator/CoreSimulator.log`.
+That log shows what failed, not why; the TCC explanation is an inference, and
+the docs say so. `-importPlatform` comes from `xcodebuild -help` and was not
+run. The detail is in the three long-form files below.
+
 For a tool or application that is not installed here, the entry cites the
 vendor's documentation, and the `source` field holds that URL.
 
@@ -135,6 +145,8 @@ Two honest gaps:
   is documented, but neither page spells the store key as a command argument,
   so `pnpm-store` stays a `file` entry rather than becoming a `cli` one.
 
-[docs/external-storage.md](external-storage.md) is the long-form evidence for
-the Xcode, simulator, Spotlight, Time Machine and Audio Unit claims, including
-what could not be checked on this machine and why.
+[docs/external-storage.md](external-storage.md),
+[docs/simulator-storage.md](simulator-storage.md) and
+[docs/audio-storage.md](audio-storage.md) are the long-form evidence for the
+Xcode, simulator, Spotlight, Time Machine and Audio Unit claims, including what
+could not be checked on this machine and why. The claims table is in the first.

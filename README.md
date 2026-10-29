@@ -127,7 +127,7 @@ $ extdisk-apfs hosts /Volumes/Scratch
   homebrew-cache           Homebrew download cache                partial  env    yes
   npm-cache                npm package cache                      partial  cli    yes
   cargo-home               Rust Cargo home                        full     env    yes
-  xcode-derived-data       Xcode derived data                     partial  flag   yes
+  xcode-derived-data       Xcode derived data                     partial  cli    yes
   simulator-runtimes       Simulator runtimes                     none     none   yes
 ```
 
@@ -212,10 +212,12 @@ this re-check.
 - **No data migration.** Nothing is copied, moved, or symlinked, by `erase` or
   by `host`. `host` creates empty directories and writes settings; the data
   that lands in them arrives because an application put it there.
-  [docs/external-storage.md](docs/external-storage.md) is the long-form
-  evidence behind the Xcode, simulator, Spotlight, Time Machine and Audio Unit
-  entries, and it separates the documented settings from the symlink
-  workarounds.
+  The long-form evidence is in three files, each separating the documented
+  settings from the workarounds that were tried and from those that failed:
+  [docs/external-storage.md](docs/external-storage.md) for Xcode, Spotlight and
+  Time Machine, [docs/simulator-storage.md](docs/simulator-storage.md) for the
+  iOS Simulator, and [docs/audio-storage.md](docs/audio-storage.md) for Audio
+  Units and Logic Pro.
 - **No multi-partition layouts.** One APFS volume on the whole disk. For more,
   `diskutil apfs addVolume` adds volumes to the container afterwards, and they
   share its free space.
